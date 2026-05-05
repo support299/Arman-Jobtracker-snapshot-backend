@@ -22,6 +22,8 @@ def _store_previous_status(sender, instance, **kwargs):
         instance._previous_status = None
         instance._previous_title = None
         instance._previous_customer_address = None
+        instance._previous_scheduled_at = None
+        instance._previous_duration_hours = None
         return
 
     try:
@@ -29,10 +31,14 @@ def _store_previous_status(sender, instance, **kwargs):
         instance._previous_status = previous.status
         instance._previous_title = previous.title
         instance._previous_customer_address = previous.customer_address
+        instance._previous_scheduled_at = previous.scheduled_at
+        instance._previous_duration_hours = previous.duration_hours
     except sender.DoesNotExist:
         instance._previous_status = None
         instance._previous_title = None
         instance._previous_customer_address = None
+        instance._previous_scheduled_at = None
+        instance._previous_duration_hours = None
 
 @receiver(post_save, sender=Job)
 def _create_appointment_on_confirmed(sender, instance, created, **kwargs):
@@ -64,6 +70,35 @@ def _create_appointment_on_confirmed(sender, instance, created, **kwargs):
         # Create appointment in GHL
         from .ghl_appointment_sync import create_ghl_appointment_from_job
         create_ghl_appointment_from_job(instance)
+
+
+@receiver(post_save, sender=Job)
+def _sync_linked_appointment_on_job_schedule_change(sender, instance, created, **kwargs):
+    """Update linked Appointment + GHL when scheduled_at or duration_hours changes."""
+    if created:
+        return
+
+    if getattr(instance, '_skip_linked_appointment_sync', False):
+        return
+
+    prev_sched = getattr(instance, '_previous_scheduled_at', None)
+    prev_dur = getattr(instance, '_previous_duration_hours', None)
+    prev_title = getattr(instance, '_previous_title', None)
+    prev_addr = getattr(instance, '_previous_customer_address', None)
+
+    if (
+        prev_sched == instance.scheduled_at
+        and prev_dur == instance.duration_hours
+        and prev_title == instance.title
+        and prev_addr == instance.customer_address
+    ):
+        return
+
+    from .ghl_appointment_sync import sync_linked_appointment_from_job
+
+    ok, err = sync_linked_appointment_from_job(instance)
+    if not ok:
+        print(f"⚠️ [SYNC JOB APPOINTMENT] GHL sync failed after job save: {err}")
 
 
 @receiver(post_save, sender=Job)

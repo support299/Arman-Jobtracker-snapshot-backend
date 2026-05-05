@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import serializers
 from .models import Job, JobServiceItem, JobAssignment, JobOccurrence, JobImage
 from datetime import datetime, timedelta
@@ -582,24 +583,49 @@ class JobSerializer(serializers.ModelSerializer):
                     'address_id': 'The provided address does not belong to the provided contact.'
                 })
 
+        appointment_sync_fields = frozenset({
+            'scheduled_at', 'duration_hours', 'title', 'customer_address',
+        })
+        will_sync_linked_appointment = (
+            Appointment.objects.filter(job_id=instance.id).exists()
+            and bool(appointment_sync_fields & set(validated_data.keys()))
+        )
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        instance.save()
 
-        if items_data is not None:
-            instance.items.all().delete()
-            for item in items_data:
-                JobServiceItem.objects.create(job=instance, **item)
+        scheduling_fields = [
+            'job_type', 'repeat_every', 'repeat_unit', 'occurrences', 'day_of_week', 'scheduled_at',
+        ]
+        need_occurrence_rebuild = any(f in self.initial_data for f in scheduling_fields)
 
-        if assignments_data is not None:
-            instance.assignments.all().delete()
-            for assign in assignments_data:
-                JobAssignment.objects.create(job=instance, **assign)
+        def _persist_related_and_occurrences():
+            if items_data is not None:
+                instance.items.all().delete()
+                for item in items_data:
+                    JobServiceItem.objects.create(job=instance, **item)
+            if assignments_data is not None:
+                instance.assignments.all().delete()
+                for assign in assignments_data:
+                    JobAssignment.objects.create(job=instance, **assign)
+            if need_occurrence_rebuild:
+                self._rebuild_occurrences(instance)
 
-        # Rebuild occurrences if any scheduling fields changed
-        scheduling_fields = ['job_type', 'repeat_every', 'repeat_unit', 'occurrences', 'day_of_week', 'scheduled_at']
-        if any(f in self.initial_data for f in scheduling_fields):
-            self._rebuild_occurrences(instance)
+        if will_sync_linked_appointment:
+            from .ghl_appointment_sync import sync_linked_appointment_from_job
+
+            with transaction.atomic():
+                instance._skip_linked_appointment_sync = True
+                instance.save()
+                _persist_related_and_occurrences()
+                ok, err = sync_linked_appointment_from_job(instance)
+                if not ok:
+                    raise serializers.ValidationError(
+                        err or 'Could not update calendar appointment in GoHighLevel.'
+                    )
+        else:
+            instance.save()
+            _persist_related_and_occurrences()
 
         return instance
 

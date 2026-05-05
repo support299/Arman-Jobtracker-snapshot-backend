@@ -4,6 +4,7 @@ import requests
 from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
+from django.db import transaction
 from django.db.models import Count, Sum, Min, Q, Prefetch
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
@@ -12,7 +13,7 @@ from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
@@ -965,29 +966,32 @@ class AppointmentViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         
-        # Set flag to skip signal sync before saving (to prevent loop)
-        instance._skip_ghl_sync = True
-        
-        # Save the appointment
-        self.perform_update(serializer)
-        
-        # Refresh instance from database to get updated values
-        updated_instance = serializer.instance
-        updated_instance.refresh_from_db()
-        
-        # Detect changed fields
-        changed_fields = {}
-        for field, old_value in previous_fields.items():
-            new_value = getattr(updated_instance, field, None)
-            if old_value != new_value:
-                changed_fields[field] = new_value
-        
-        # Sync to GHL if there are changes and appointment has a GHL ID
-        if changed_fields and updated_instance.ghl_appointment_id:
-            # Skip signal sync to prevent loop (already set above, but ensure it's still set)
-            updated_instance._skip_ghl_sync = True
-            from .ghl_appointment_sync import update_appointment_in_ghl
-            update_appointment_in_ghl(updated_instance, changed_fields=changed_fields)
+        with transaction.atomic():
+            # Set flag to skip signal sync before saving (to prevent loop)
+            instance._skip_ghl_sync = True
+
+            self.perform_update(serializer)
+
+            updated_instance = serializer.instance
+            updated_instance.refresh_from_db()
+
+            changed_fields = {}
+            for field, old_value in previous_fields.items():
+                new_value = getattr(updated_instance, field, None)
+                if old_value != new_value:
+                    changed_fields[field] = new_value
+
+            if changed_fields and updated_instance.ghl_appointment_id:
+                updated_instance._skip_ghl_sync = True
+                from .ghl_appointment_sync import update_appointment_in_ghl
+
+                ok, err = update_appointment_in_ghl(
+                    updated_instance, changed_fields=changed_fields
+                )
+                if not ok:
+                    raise ValidationError(
+                        detail=err or 'Could not update appointment in GoHighLevel.'
+                    )
         
         if getattr(updated_instance, '_prefetched_objects_cache', None):
             # If 'prefetch_related' has been applied to a queryset, we need to
