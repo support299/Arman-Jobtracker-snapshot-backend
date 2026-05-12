@@ -442,30 +442,55 @@ def delete_appointment_from_ghl(appointment: Appointment) -> bool:
         return False
 
 
+def _link_existing_matching_appointments_to_job(job) -> None:
+    """
+    If GHL webhooks already created matching local appointment rows, link those rows to the job.
+    This keeps job->appointment mapping complete without creating duplicate GHL events.
+    """
+    window = compute_job_appointment_utc_window(job)
+    if not window:
+        return
+    start_time_utc, end_time_utc, _credentials, location_id = window
+
+    base_qs = Appointment.objects.filter(
+        start_time=start_time_utc,
+        end_time=end_time_utc,
+        calendar__name="Reccuring Service Calendar",
+        location_id=location_id,
+    )
+    for assignment in job.assignments.select_related('user').all():
+        if not assignment.user:
+            continue
+        appointment = base_qs.filter(assigned_user=assignment.user).first()
+        if appointment and not appointment.job_id:
+            appointment.job = job
+            appointment._skip_ghl_sync = True
+            appointment.save(update_fields=["job", "updated_at"])
+            print(
+                f"🔗 [CREATE APPOINTMENT FROM JOB] Linked existing appointment {appointment.id} "
+                f"to job {job.id}"
+            )
+
+
 def create_ghl_appointment_from_job(job) -> Optional[Appointment]:
     """
-    Post appointment(s) to GHL for a confirmed job and persist the first created event locally
-    with job link (OneToOne). Extra assignees still get GHL events; only the first is linked.
+    Post appointment(s) to GHL for a confirmed job and persist each created event locally.
+    One job can have one linked appointment per assigned technician.
     """
     from jobtracker_app.job_appointment_utils import get_assignee_ghl_ids_without_matching_appointment
 
     print(f"📅 [CREATE APPOINTMENT FROM JOB] Starting for job {job.id}")
 
-    if Appointment.objects.filter(job_id=job.id).exists():
-        existing = Appointment.objects.get(job=job)
-        print(
-            f"ℹ️ [CREATE APPOINTMENT FROM JOB] Job {job.id} already linked to appointment "
-            f"{existing.id}, skipping create"
-        )
-        return existing
+    _link_existing_matching_appointments_to_job(job)
 
     assigned_user_ghl_ids = get_assignee_ghl_ids_without_matching_appointment(job)
     if not assigned_user_ghl_ids:
+        existing = Appointment.objects.filter(job_id=job.id).first()
         print(
             f"⚠️ [CREATE APPOINTMENT FROM JOB] All assignees already have matching appointment(s) "
             f"for job {job.id}, skipping GHL create"
         )
-        return None
+        return existing
 
     window = compute_job_appointment_utc_window(job)
     if not window:
@@ -528,7 +553,7 @@ def create_ghl_appointment_from_job(job) -> Optional[Appointment]:
     url = "https://services.leadconnectorhq.com/calendars/events/appointments"
     assignee_ids_to_use = assigned_user_ghl_ids if assigned_user_ghl_ids else [None]
 
-    linked_appointment = None
+    first_linked_appointment = None
     created_any = False
 
     try:
@@ -557,54 +582,54 @@ def create_ghl_appointment_from_job(job) -> Optional[Appointment]:
                 print(f"⚠️ [CREATE APPOINTMENT FROM JOB] Missing appointment id in response: {response.text}")
                 continue
 
-            if linked_appointment is None:
-                contact_obj = None
-                if ghl_contact_id:
-                    try:
-                        contact_obj = Contact.objects.get(contact_id=ghl_contact_id)
-                    except Contact.DoesNotExist:
-                        print(f"⚠️ [CREATE APPOINTMENT FROM JOB] Contact {ghl_contact_id} not found")
+            contact_obj = None
+            if ghl_contact_id:
+                try:
+                    contact_obj = Contact.objects.get(contact_id=ghl_contact_id)
+                except Contact.DoesNotExist:
+                    print(f"⚠️ [CREATE APPOINTMENT FROM JOB] Contact {ghl_contact_id} not found")
 
-                assigned_user_obj = None
-                if assigned_user_ghl_id:
-                    try:
-                        assigned_user_obj = User.objects.get(ghl_user_id=assigned_user_ghl_id)
-                    except User.DoesNotExist:
-                        print(f"⚠️ [CREATE APPOINTMENT FROM JOB] User {assigned_user_ghl_id} not found")
+            assigned_user_obj = None
+            if assigned_user_ghl_id:
+                try:
+                    assigned_user_obj = User.objects.get(ghl_user_id=assigned_user_ghl_id)
+                except User.DoesNotExist:
+                    print(f"⚠️ [CREATE APPOINTMENT FROM JOB] User {assigned_user_ghl_id} not found")
 
-                linked_appointment = Appointment.objects.create(
-                    ghl_appointment_id=ghl_appt_id,
-                    account=credentials,
-                    location_id=location_id,
-                    title=payload.get("title"),
-                    address=payload.get("address"),
-                    calendar=calendar,
-                    appointment_status="confirmed",
-                    notes=payload.get("description"),
-                    ghl_contact_id=ghl_contact_id,
-                    ghl_assigned_user_id=assigned_user_ghl_id or None,
-                    start_time=start_time_utc,
-                    end_time=end_time_utc,
-                    created_from_backend=True,
-                    job=job,
-                    assigned_user=assigned_user_obj,
-                )
-                if contact_obj:
-                    linked_appointment.contact = contact_obj
-                    linked_appointment.save(update_fields=["contact"])
-                print(
-                    f"✅ [CREATE APPOINTMENT FROM JOB] Saved local appointment {linked_appointment.id} "
-                    f"for job {job.id}"
-                )
-            else:
-                print(
-                    f"ℹ️ [CREATE APPOINTMENT FROM JOB] Extra GHL appointment {ghl_appt_id} created "
-                    f"(job already linked to first)"
-                )
+            appointment_defaults = {
+                "account": credentials,
+                "location_id": location_id,
+                "title": payload.get("title"),
+                "address": payload.get("address"),
+                "calendar": calendar,
+                "appointment_status": "confirmed",
+                "notes": payload.get("description"),
+                "ghl_contact_id": ghl_contact_id,
+                "ghl_assigned_user_id": assigned_user_ghl_id or None,
+                "start_time": start_time_utc,
+                "end_time": end_time_utc,
+                "created_from_backend": True,
+                "job": job,
+                "assigned_user": assigned_user_obj,
+            }
+            if contact_obj:
+                appointment_defaults["contact"] = contact_obj
+
+            linked_appointment, local_created = Appointment.objects.update_or_create(
+                ghl_appointment_id=ghl_appt_id,
+                defaults=appointment_defaults,
+            )
+            if first_linked_appointment is None:
+                first_linked_appointment = linked_appointment
+            action = "Created" if local_created else "Updated existing"
+            print(
+                f"✅ [CREATE APPOINTMENT FROM JOB] {action} local appointment {linked_appointment.id} "
+                f"for job {job.id} and assignee {assigned_user_ghl_id}"
+            )
 
         if not created_any:
             return None
-        return linked_appointment
+        return first_linked_appointment
 
     except Exception as e:
         print(f"❌ [CREATE APPOINTMENT FROM JOB] Error creating appointment in GHL: {str(e)}")
@@ -613,53 +638,97 @@ def create_ghl_appointment_from_job(job) -> Optional[Appointment]:
 
 def sync_linked_appointment_from_job(job) -> Tuple[bool, Optional[str]]:
     """
-    When a job's schedule or details change, PUT to GHL first, then update the linked Appointment row.
-    Returns (success, error_message). On failure, the local appointment row is left unchanged.
+    When a job's schedule or details change, PUT to GHL first, then update every linked Appointment row.
+    Returns (success, error_message). On failure, local appointment rows are left unchanged.
     """
-    appt = Appointment.objects.filter(job_id=job.id).first()
-    if not appt:
+    appointments = list(Appointment.objects.filter(job_id=job.id))
+    if not appointments:
         return True, None
 
     window = compute_job_appointment_utc_window(job)
     if window:
         start_time_utc, end_time_utc, credentials, location_id = window
     else:
-        start_time_utc = appt.start_time
-        end_time_utc = appt.end_time
-        credentials = get_ghl_credentials_for_appointment(appt)
-        location_id = appt.location_id or ""
+        first_appt = appointments[0]
+        start_time_utc = first_appt.start_time
+        end_time_utc = first_appt.end_time
+        credentials = get_ghl_credentials_for_appointment(first_appt)
+        location_id = first_appt.location_id or ""
 
     new_title = job.title or "Job Appointment"
     new_address = job.customer_address or "Zoom"
 
-    changed_fields = {}
-    if start_time_utc and appt.start_time != start_time_utc:
-        changed_fields["start_time"] = start_time_utc
-    if end_time_utc and appt.end_time != end_time_utc:
-        changed_fields["end_time"] = end_time_utc
-    if appt.title != new_title:
-        changed_fields["title"] = new_title
-    if appt.address != new_address:
-        changed_fields["address"] = new_address
+    updates = []
+    for appt in appointments:
+        changed_fields = {}
+        if start_time_utc and appt.start_time != start_time_utc:
+            changed_fields["start_time"] = start_time_utc
+        if end_time_utc and appt.end_time != end_time_utc:
+            changed_fields["end_time"] = end_time_utc
+        if appt.title != new_title:
+            changed_fields["title"] = new_title
+        if appt.address != new_address:
+            changed_fields["address"] = new_address
+        if changed_fields:
+            updates.append((appt, changed_fields))
 
-    if not changed_fields:
+    if not updates:
         return True, None
 
-    if appt.ghl_appointment_id and not str(appt.ghl_appointment_id).startswith("local_"):
-        ok, err = update_appointment_in_ghl(appt, changed_fields=changed_fields)
-        if not ok:
-            return False, err
+    for appt, changed_fields in updates:
+        if appt.ghl_appointment_id and not str(appt.ghl_appointment_id).startswith("local_"):
+            ok, err = update_appointment_in_ghl(appt, changed_fields=changed_fields)
+            if not ok:
+                return False, err
 
-    if start_time_utc:
-        appt.start_time = start_time_utc
-    if end_time_utc:
-        appt.end_time = end_time_utc
-    appt.title = new_title
-    appt.address = new_address
-    if location_id:
-        appt.location_id = location_id
-    if credentials:
-        appt.account = credentials
-    appt._skip_ghl_sync = True
-    appt.save()
+    for appt, _changed_fields in updates:
+        if start_time_utc:
+            appt.start_time = start_time_utc
+        if end_time_utc:
+            appt.end_time = end_time_utc
+        appt.title = new_title
+        appt.address = new_address
+        if location_id:
+            appt.location_id = location_id
+        if credentials:
+            appt.account = credentials
+        appt._skip_ghl_sync = True
+        appt.save()
+    return True, None
+
+
+def cancel_linked_appointments_from_job(job) -> Tuple[bool, Optional[str]]:
+    """
+    When a job is cancelled, cancel every linked Appointment in GHL and locally.
+    Local rows are updated only after the GHL updates succeed.
+    """
+    appointments = list(Appointment.objects.filter(job_id=job.id))
+    if not appointments:
+        return True, None
+
+    appointments_to_cancel = [
+        appt for appt in appointments
+        if appt.appointment_status != "cancelled"
+    ]
+    if not appointments_to_cancel:
+        return True, None
+
+    for appt in appointments_to_cancel:
+        has_real_ghl_id = (
+            appt.ghl_appointment_id
+            and not str(appt.ghl_appointment_id).startswith("local_")
+        )
+        if has_real_ghl_id:
+            ok, err = update_appointment_in_ghl(
+                appt,
+                changed_fields={"appointment_status": "cancelled"},
+            )
+            if not ok:
+                return False, err
+
+    for appt in appointments_to_cancel:
+        appt.appointment_status = "cancelled"
+        appt._skip_ghl_sync = True
+        appt.save(update_fields=["appointment_status", "updated_at"])
+
     return True, None

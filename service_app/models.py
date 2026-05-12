@@ -682,8 +682,8 @@ class Appointment(models.Model):
         help_text="True if appointment was created from our backend, False if from GHL"
     )
     
-    # Job relationship - one-to-one
-    job = models.OneToOneField(
+    # Job relationship - one job can create one appointment per assigned technician
+    job = models.ForeignKey(
         'jobtracker_app.Job',
         on_delete=models.SET_NULL,
         null=True,

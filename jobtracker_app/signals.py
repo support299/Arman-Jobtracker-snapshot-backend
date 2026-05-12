@@ -45,14 +45,8 @@ def _create_appointment_on_confirmed(sender, instance, created, **kwargs):
     """
     Create appointment in GHL when job status becomes 'confirmed'.
     This only happens once when status changes to 'confirmed'.
-    Uses manual check (same as slot_reserved_info) to see if job already has matching appointment(s).
+    The create helper handles existing appointments per assignee and only creates missing ones.
     """
-    from .job_appointment_utils import job_has_matching_appointment
-
-    if job_has_matching_appointment(instance):
-        print(f"⚠️ [APPOINTMENT] Job {instance.id} already has matching appointment(s) (manual check), skipping GHL create")
-        return
-
     if created:
         # If job is created with 'confirmed' status directly
         if instance.status == 'confirmed':
@@ -70,6 +64,22 @@ def _create_appointment_on_confirmed(sender, instance, created, **kwargs):
         # Create appointment in GHL
         from .ghl_appointment_sync import create_ghl_appointment_from_job
         create_ghl_appointment_from_job(instance)
+
+
+@receiver(post_save, sender=Job)
+def _cancel_linked_appointments_on_job_cancelled(sender, instance, created, **kwargs):
+    """Cancel linked GHL appointments when a job transitions to cancelled."""
+    if created:
+        return
+
+    previous_status = getattr(instance, "_previous_status", None)
+    if instance.status == 'cancelled' and previous_status != 'cancelled':
+        print(f"🚫 [APPOINTMENT] Job transitioned to CANCELLED | job_id={instance.id} | previous={previous_status}")
+        from .ghl_appointment_sync import cancel_linked_appointments_from_job
+
+        ok, err = cancel_linked_appointments_from_job(instance)
+        if not ok:
+            print(f"⚠️ [CANCEL JOB APPOINTMENTS] GHL cancellation failed after job save: {err}")
 
 
 @receiver(post_save, sender=Job)
