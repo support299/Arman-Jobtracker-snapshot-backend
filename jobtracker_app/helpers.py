@@ -99,6 +99,75 @@ def create_product(access_token, location_id, product_name, custom_data=None):
     return None
 
 
+def resolve_invoice_location_id_from_job(job):
+    """
+    Which GHL subaccount (location) owns this job — same precedence as
+    jobtracker_app.signals._trigger_invoice_on_completion.
+    """
+    account = getattr(job, "account", None)
+    if account and getattr(account, "location_id", None):
+        return account.location_id
+    contact = getattr(job, "contact", None)
+    if contact and contact.location_id:
+        return contact.location_id
+    submission = getattr(job, "submission", None)
+    if (
+        submission
+        and getattr(submission, "contact", None)
+        and submission.contact.location_id
+    ):
+        return submission.contact.location_id
+    if job.customer_email:
+        contact_by_email = (
+            Contact.objects.filter(email=job.customer_email)
+            .exclude(location_id__isnull=True)
+            .exclude(location_id="")
+            .first()
+        )
+        if contact_by_email and contact_by_email.location_id:
+            return contact_by_email.location_id
+    return None
+
+
+def resolve_ghl_credentials_for_invoice(data=None, job_id=None):
+    """
+    OAuth row to use for GHL invoice, contact search, product create, etc.
+
+    Order: job from ``job_id`` (uses ``job.account`` or resolved location), then
+    payload ``location_id`` (e.g. from external webhook without job row), then
+    legacy ``GHLAuthCredentials.objects.first()``.
+    """
+    data = data or {}
+
+    if job_id:
+        job = (
+            Job.objects.select_related(
+                "account", "contact", "submission__contact"
+            )
+            .filter(id=job_id)
+            .first()
+        )
+        if job:
+            if getattr(job, "account_id", None) and job.account:
+                return job.account
+            loc = resolve_invoice_location_id_from_job(job)
+            if loc:
+                cred = GHLAuthCredentials.objects.filter(location_id=loc).first()
+                if cred:
+                    return cred
+                print(f"⚠️ [INVOICE] No GHLAuthCredentials for job location_id={loc}")
+
+    location_id = data.get("location_id")
+    if location_id:
+        cred = GHLAuthCredentials.objects.filter(location_id=location_id).first()
+        if cred:
+            return cred
+        print(f"⚠️ [INVOICE] No GHLAuthCredentials for location_id={location_id}")
+
+    print("⚠️ [INVOICE] Falling back to first GHLAuthCredentials (legacy)")
+    return GHLAuthCredentials.objects.first()
+
+
 def build_invoice_payload_from_job(job):
     """
     Construct the payload expected by the invoice flow based on a Job instance.
@@ -168,12 +237,17 @@ def build_invoice_payload_from_job(job):
         "company_name": company_name,
     }
 
+    location_id = resolve_invoice_location_id_from_job(job)
+    if location_id:
+        payload["location_id"] = location_id
+
     return payload
 
 
-def update_contact(contact_id, data):
+def update_contact(contact_id, data, credentials=None):
     url = f'https://services.leadconnectorhq.com/contacts/{contact_id}'
-    credentials = GHLAuthCredentials.objects.first()
+    if credentials is None:
+        credentials = GHLAuthCredentials.objects.first()
     print(credentials, 'creee')
 
     headers = {
@@ -322,9 +396,10 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
 
     
 
-def send_invoice(invoiceId):
+def send_invoice(invoiceId, credentials=None):
     url = f'https://services.leadconnectorhq.com/invoices/{invoiceId}/send'
-    credentials = GHLAuthCredentials.objects.first()
+    if credentials is None:
+        credentials = GHLAuthCredentials.objects.first()
     
     headers = {
         'Authorization': f'Bearer {credentials.access_token}',

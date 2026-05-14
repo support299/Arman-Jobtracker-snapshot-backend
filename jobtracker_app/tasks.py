@@ -9,10 +9,10 @@ from accounts.models import GHLAuthCredentials
 from .helpers import (
     build_invoice_payload_from_job,
     create_invoice,
+    resolve_ghl_credentials_for_invoice,
     search_ghl_contact,
     send_invoice,
     update_contact,
-    create_or_update_ghl_contact_from_job,
 )
 from .models import Job
 
@@ -44,11 +44,21 @@ def _process_invoice_payload(data, job_id=None):
     services = data.get("selected_services", [])
     customer_address = data.get("customer_address")
 
+    if job_id is None and isinstance(data, dict):
+        raw_job = data.get("job_id")
+        if raw_job is not None:
+            job_id = str(raw_job)
+
     if not customer_email:
         print("No customer email in invoice payload.")
         return {"error": "Customer email missing"}
-    
-    credentials = GHLAuthCredentials.objects.first()
+
+    credentials = resolve_ghl_credentials_for_invoice(data=data, job_id=job_id)
+    if not credentials:
+        print("No GHL credentials resolved for invoice (location/job).")
+        return {"error": "GHL account credentials not found for this job or location"}
+
+    print(f"📍 [INVOICE] Using GHL account location_id={credentials.location_id}")
 
     # Search contact
     contacts = search_ghl_contact(credentials.access_token, customer_email, credentials.location_id)
@@ -110,7 +120,7 @@ def _process_invoice_payload(data, job_id=None):
         try:
             if "card authorized" not in [t.lower() for t in existing_tags]:
                 print("Card not authorized → sending invoice...")
-                send_resp = send_invoice(invoice_id)
+                send_resp = send_invoice(invoice_id, credentials=credentials)
                 print("Send invoice response:", send_resp)
             else:
                 print("Card authorized → skipping invoice send.")
@@ -121,7 +131,7 @@ def _process_invoice_payload(data, job_id=None):
 
         updated_tags = list(set(existing_tags + ["Invoice Created"]))
         payload = {"tags": updated_tags}
-        update_resp = update_contact(contact_id, payload)
+        update_resp = update_contact(contact_id, payload, credentials=credentials)
         print("Contact update response:", update_resp)
 
         return {
@@ -154,8 +164,10 @@ def handle_webhook_event(data):
 def handle_completed_job_invoice(job_id):
     try:
         job = (
-            Job.objects.select_related('submission')
-            .prefetch_related('items__service')
+            Job.objects.select_related(
+                "account", "contact", "submission__contact"
+            )
+            .prefetch_related("items__service")
             .filter(id=job_id)
             .first()
         )
