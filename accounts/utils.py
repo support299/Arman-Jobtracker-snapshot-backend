@@ -579,24 +579,24 @@ def call():
     sync_contacts_to_db1(contacts)
 
 
-def create_ghl_location_index(location_id: str, location_index: dict):
+def create_ghl_location_index(location_id: str):
     """
     Create GHLLocationIndex entries for a given location_id
     """
 
-    # location_index = {
-    #     "address_0": 0,
-    #     "QmYk134LkK2hownvL1sE": 1,
-    #     "6K2aY5ghsAeCNhNJBCt": 2,
-    #     "4vx8hTmhneL3aHhQOobV": 3,
-    #     "ou8hGYQTDuijrxtCD2Bhs": 4,
-    #     "IVh5iKD6A7xB6J0CqocG": 5,
-    #     "vsrkHtczxuyyIg9CG80p": 6,
-    #     "tt28EWemd1DyWpzqQKA3": 7,
-    #     "1ERLsUjWpMrUfHZx1oIr": 8,
-    #     "cCpLI0tAY2q2MfCM5yco": 9,
-    #     "cDlPlyq0J77lx2G1U88G": 10,
-    # }
+    location_index = {
+        "address_0": 0,
+        "ZTxqvlfetrChD7gzfJFD": 1,
+        "PVBmV2vWlCZyIXmDTFXO": 2,
+        "U7XTy6fhSEms64WryF5O": 3,
+        "EucpKZlwGFKIRy0fmB5L": 4,
+        "OLoM1nqnsgRGhILdl4ia": 5,
+        "KSAZ8GWk5tVSTmYKqljN": 6,
+        "obIDQP4eIkVoVgPY8x9Z": 7,
+        "9444TNetRYPIYemv7iFA": 8,
+        "fmhg42CgNNNBu7Ik3DK6": 9,
+        "AJiNHH3vmpm0544WtAyr": 10,
+    }
 
     # Fetch credentials
     credentials = GHLAuthCredentials.objects.filter(
@@ -1173,6 +1173,60 @@ def fetch_all_users_from_ghl(location_id: str, access_token: str) -> List[Dict[s
     except requests.exceptions.RequestException as e:
         print(f"Error fetching users from GHL: {e}")
         raise Exception(f"Failed to fetch users: {e}")
+
+
+def try_link_user_ghl_id_from_email(user: User, account: Optional[GHLAuthCredentials] = None) -> bool:
+    """
+    If the user has an email but no ``ghl_user_id``, fetch location users from GHL and set
+    ``ghl_user_id`` when a case-insensitive email match exists.
+
+    Used after admin-created users so they align with GHL without running a full sync.
+
+    Returns True if ``ghl_user_id`` was set. Swallows GHL/network errors so callers can proceed.
+    """
+    if not user or not getattr(user, "email", None):
+        return False
+    if getattr(user, "ghl_user_id", None):
+        return False
+    if not account:
+        return False
+    location_id = getattr(account, "location_id", None) or ""
+    access_token = getattr(account, "access_token", None) or ""
+    if not location_id or not access_token:
+        print("⚠️ [GHL USER LINK] Missing location_id or access_token; skipping email match.")
+        return False
+
+    target_email = user.email.strip().lower()
+    if not target_email:
+        return False
+
+    try:
+        users_data = fetch_all_users_from_ghl(location_id, access_token)
+    except Exception as e:
+        print(f"⚠️ [GHL USER LINK] Could not fetch GHL users for email match: {e}")
+        return False
+
+    print(f"users_data: {users_data}")
+
+    ghl_id = None
+    for row in users_data:
+        raw = (row.get("email") or "").strip().lower()
+        if raw and raw == target_email:
+            ghl_id = row.get("id")
+            break
+
+    if not ghl_id:
+        print(f"⚠️ [GHL USER LINK] No GHL user with email {user.email!r} for location {location_id}.")
+        return False
+
+    if User.objects.exclude(pk=user.pk).filter(ghl_user_id=ghl_id).exists():
+        print(f"⚠️ [GHL USER LINK] GHL user id {ghl_id} already assigned to another local user; skipping.")
+        return False
+
+    user.ghl_user_id = ghl_id
+    user.save(update_fields=["ghl_user_id"])
+    print(f"✅ [GHL USER LINK] Linked local user pk={user.pk} to GHL user id {ghl_id}")
+    return True
 
 
 def sync_all_users_to_db(location_id: str, access_token: str) -> Dict[str, int]:

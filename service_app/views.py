@@ -18,6 +18,7 @@ from .models import Service, ServiceSettings
 from .serializers import ServiceSettingsSerializer
 from accounts.permissions import AccountScopedPermission
 from accounts.mixins import AccountScopedQuerysetMixin
+from accounts.utils import try_link_user_ghl_id_from_email
 from .account_scope_utils import get_service_for_account, get_location_for_account
 
 from rest_framework.permissions import IsAuthenticated
@@ -1216,6 +1217,11 @@ class UserListCreateView(AccountScopedQuerysetMixin, generics.ListCreateAPIView)
         if role:
             qs = qs.filter(role=role)
         return qs
+
+    def perform_create(self, serializer):
+        account = getattr(self.request, "account", None)
+        user = serializer.save(account=account)
+        try_link_user_ghl_id_from_email(user, account)
 
 
 class UserDetailView(AccountScopedQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):

@@ -912,24 +912,36 @@ class SubmitCustomServiceResponsesView(APIView):
 
 # Step 7: Get submission details with quotes
 class SubmissionDetailView(generics.RetrieveUpdateAPIView):
-    """Get detailed submission with all quotes (scoped to account)."""
+    """Get detailed submission with all quotes.
+
+    GET/HEAD/OPTIONS: resolve by submission id only; account comes from the submission
+    (no location_id / request account required). Mutations still require account context.
+    """
     queryset = CustomerSubmission.objects.all()
     serializer_class = CustomerSubmissionDetailSerializer
     permission_classes = [AccountScopedPermission, AllowAny]
     lookup_field = 'id'
 
+    def get_permissions(self):
+        if self.request.method in ('GET', 'HEAD', 'OPTIONS'):
+            return [AllowAny()]
+        return [AccountScopedPermission(), AllowAny()]
+
     def get_object(self):
         submission_id = self.kwargs['id']
-        account = getattr(self.request, 'account', None)
-        submission = get_submission_for_account(submission_id, account)
-        return CustomerSubmission.objects.prefetch_related(
+        qs = CustomerSubmission.objects.prefetch_related(
             'customerserviceselection_set__service',
             'customerserviceselection_set__package_quotes__package',
             'customerserviceselection_set__question_responses__question',
             'customerserviceselection_set__question_responses__option_responses__option',
             'customerserviceselection_set__question_responses__sub_question_responses__sub_question',
             'images',
-        ).get(id=submission.id)
+        )
+        submission = get_object_or_404(qs, pk=submission_id)
+        account = submission.account
+        if account is not None:
+            self.request.account = account
+        return submission
 
 # Update additional_data for submission
 class UpdateSubmissionAdditionalDataView(APIView):
