@@ -29,6 +29,8 @@ class GHLAuthCredentials(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    is_active = models.BooleanField(default=True)
 
     def __str__(self):
         return f"{self.user_id} - {self.company_id}"
@@ -294,3 +296,90 @@ class GHLLocationIndex(models.Model):
 
     def __str__(self):
         return f"{self.account.user_id} - {self.parent_id} (Order: {self.order})"
+
+
+class Location(models.Model):
+    COUNTRY_CHOICES = [
+        ('AE', 'United Arab Emirates'),
+        ('AR', 'Argentina'),
+        ('AT', 'Austria'),
+        ('AU', 'Australia'),
+        ('BE', 'Belgium'),
+        ('BR', 'Brazil'),
+        ('CA', 'Canada'),
+        ('CH', 'Switzerland'),
+        ('CL', 'Chile'),
+        ('CN', 'China'),
+        ('CO', 'Colombia'),
+        ('CZ', 'Czech Republic'),
+        ('DE', 'Germany'),
+        ('DK', 'Denmark'),
+        ('ES', 'Spain'),
+        ('FI', 'Finland'),
+        ('FR', 'France'),
+        ('GB', 'United Kingdom'),
+        ('HK', 'Hong Kong'),
+        ('ID', 'Indonesia'),
+        ('IE', 'Ireland'),
+        ('IN', 'India'),
+        ('IT', 'Italy'),
+        ('JP', 'Japan'),
+        ('KR', 'South Korea'),
+        ('KW', 'Kuwait'),
+        ('MX', 'Mexico'),
+        ('MY', 'Malaysia'),
+        ('NL', 'Netherlands'),
+        ('NO', 'Norway'),
+        ('NZ', 'New Zealand'),
+        ('OM', 'Oman'),
+        ('PE', 'Peru'),
+        ('PH', 'Philippines'),
+        ('PL', 'Poland'),
+        ('PT', 'Portugal'),
+        ('QA', 'Qatar'),
+        ('SA', 'Saudi Arabia'),
+        ('SE', 'Sweden'),
+        ('SG', 'Singapore'),
+        ('TH', 'Thailand'),
+        ('TW', 'Taiwan'),
+        ('US', 'United States'),
+        ('VN', 'Vietnam'),
+        ('ZA', 'South Africa'),
+    ]
+
+    id = models.CharField(primary_key=True, max_length=50)
+    company_id = models.CharField(max_length=50)
+    name = models.CharField(max_length=255)
+    address = models.CharField(max_length=255)
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    country = models.CharField(max_length=10)
+    postal_code = models.CharField(max_length=20)
+    website = models.CharField(max_length=255, null=True, blank=True)
+    timezone = models.CharField(max_length=100)
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    email = models.EmailField()
+    phone = models.CharField(max_length=20)
+    automatic_mobile_app_invite = models.BooleanField(default=False)
+    date_added = models.DateTimeField()
+    domain = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'ghl_api_locations'
+
+    def get_country_display(self):
+        """Label for serializers/admin; unknown codes fall back to the stored value."""
+        raw = (self.country or "").strip()
+        if not raw:
+            return ""
+        return dict(self.COUNTRY_CHOICES).get(raw.upper(), raw)
+
+    def save(self, *args, **kwargs):
+        if self.country:
+            self.country = self.country.strip().upper()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} "

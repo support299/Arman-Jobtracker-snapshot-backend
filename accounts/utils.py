@@ -6,13 +6,26 @@ from typing import List, Dict, Any, Optional, Tuple
 from django.utils.dateparse import parse_datetime
 from django.db import transaction
 from django.core.exceptions import ObjectDoesNotExist
-from accounts.models import GHLAuthCredentials, Contact, Address, Calendar, GHLLocationIndex, GHLCustomField, GHLMediaStorage
+from accounts.models import (
+    GHLAuthCredentials,
+    Contact,
+    Address,
+    Calendar,
+    GHLLocationIndex,
+    GHLCustomField,
+    GHLMediaStorage,
+    Location,
+)
 from service_app.models import User, Appointment
 
-# --- GHL Media Storage (upload/update/delete) ---
+# --- GoHighLevel REST API (single definition for URL/version/token) ---
+TOKEN_URL = "https://services.leadconnectorhq.com/oauth/token"
+LIMIT_PER_PAGE = 100
+BASE_URL = "https://services.leadconnectorhq.com"
+API_VERSION = "2021-07-28"
+GHL_MEDIA_BASE = f"{BASE_URL}/medias"
 
-GHL_MEDIA_BASE = "https://services.leadconnectorhq.com/medias"
-GHL_API_VERSION = "2021-07-28"
+# --- GHL Media Storage (upload/update/delete) ---
 
 # Image compression before GHL upload: only compress if larger than this (bytes) or dimension > MAX_DIMENSION
 _COMPRESS_SIZE_THRESHOLD = 400 * 1024  # 400 KB
@@ -108,7 +121,7 @@ def upload_file_to_ghl_media(
     url = f"{GHL_MEDIA_BASE}/upload-file"
     headers = {
         "Accept": "application/json",
-        "Version": GHL_API_VERSION,
+        "Version": API_VERSION,
         "Authorization": f"Bearer {access_token}",
     }
     try:
@@ -178,7 +191,7 @@ def update_ghl_media(
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Version": GHL_API_VERSION,
+        "Version": API_VERSION,
         "Authorization": f"Bearer {access_token}",
     }
     payload = {"name": name, "altType": "location", "altId": location_id}
@@ -194,7 +207,7 @@ def delete_ghl_media(access_token: str, document_id: str, location_id: str) -> b
     url = f"{GHL_MEDIA_BASE}/{document_id}"
     params = {"altType": "location", "altId": location_id}
     headers = {
-        "Version": GHL_API_VERSION,
+        "Version": API_VERSION,
         "Authorization": f"Bearer {access_token}",
     }
     try:
@@ -1613,3 +1626,196 @@ def sync_calendars_from_ghl(location_id: str = None, access_token: str = None) -
     except Exception as e:
         print(f"❌ [CALENDAR SYNC] Error in sync_calendars_from_ghl: {str(e)}")
         return []
+
+class LocationServicesError(Exception):
+    """Raised when GHL location API calls or saving Location rows fails."""
+
+
+class GHLCredentialsError(LocationServicesError):
+    """Missing or unusable GHLAuthCredentials for a location_id."""
+
+
+def _ghl_response_body_preview(response, limit=500):
+    try:
+        return (response.text or "")[:limit]
+    except Exception:
+        return ""
+
+
+def _ghl_parse_json_ok(response):
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _refresh_ghl_auth_credentials(creds: GHLAuthCredentials) -> None:
+    from decouple import config
+
+    refresh = (creds.refresh_token or "").strip()
+    if not refresh:
+        raise GHLCredentialsError(f"No refresh_token stored for location_id={creds.location_id}")
+
+    resp = requests.post(
+        TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "client_id": config("GHL_CLIENT_ID"),
+            "client_secret": config("GHL_CLIENT_SECRET"),
+            "refresh_token": refresh,
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise LocationServicesError(
+            f"Token refresh failed ({resp.status_code}): {_ghl_response_body_preview(resp)}"
+        )
+    payload = _ghl_parse_json_ok(resp)
+    if not payload:
+        raise LocationServicesError("Token refresh returned non-JSON body")
+
+    access_token = (payload.get("access_token") or "").strip()
+    if not access_token:
+        raise LocationServicesError("Token refresh response missing access_token")
+
+    creds.access_token = access_token
+    new_refresh = (payload.get("refresh_token") or "").strip()
+    if new_refresh:
+        creds.refresh_token = new_refresh
+    expires_in = payload.get("expires_in")
+    if isinstance(expires_in, int):
+        creds.expires_in = expires_in
+    creds.scope = payload.get("scope") or creds.scope or ""
+    creds.user_type = payload.get("userType") or creds.user_type or ""
+    creds.company_id = payload.get("companyId") or creds.company_id or ""
+    uid = (payload.get("userId") or "").strip()
+    if uid:
+        creds.user_id = uid
+    loc_id = (payload.get("locationId") or "").strip()
+    if loc_id:
+        creds.location_id = loc_id
+    creds.save()
+
+
+def _credentials_for_location(location_id: str) -> GHLAuthCredentials:
+    lid = (location_id or "").strip()
+    if not lid:
+        raise GHLCredentialsError("location_id is required")
+
+    creds = GHLAuthCredentials.objects.filter(location_id=lid).first()
+    if not creds:
+        raise GHLCredentialsError(f"No GHLAuthCredentials row for location_id={lid}")
+    if not (creds.access_token or "").strip():
+        raise GHLCredentialsError(f"Empty access_token for location_id={lid}")
+    return creds
+
+
+def _authorized_get_for_location(location_id: str, url: str):
+    creds = _credentials_for_location(location_id)
+    headers = {
+        "Authorization": f"Bearer {creds.access_token.strip()}",
+        "Content-Type": "application/json",
+        "Version": API_VERSION,
+    }
+    response = requests.get(url, headers=headers, timeout=30)
+    if response.status_code == 401 and (creds.refresh_token or "").strip():
+        _refresh_ghl_auth_credentials(creds)
+        creds.refresh_from_db()
+        headers["Authorization"] = f"Bearer {creds.access_token.strip()}"
+        response = requests.get(url, headers=headers, timeout=30)
+    return response
+
+
+class LocationServices:
+
+    @staticmethod
+    def get_location(location_id):
+        """
+        Fetch a specific location by ID from GoHighLevel API (uses GHLAuthCredentials for Bearer token).
+        """
+        url = f"{BASE_URL}/locations/{location_id}"
+        response = _authorized_get_for_location(location_id, url)
+
+        if response.status_code == 200:
+            data = _ghl_parse_json_ok(response)
+            if data is None:
+                raise LocationServicesError(
+                    f"API returned non-JSON ({response.status_code}): {_ghl_response_body_preview(response)}"
+                )
+            return data
+        raise LocationServicesError(
+            f"API request failed: {response.status_code} {_ghl_response_body_preview(response)}"
+        )
+
+    @staticmethod
+    def pull_location(location_id):
+        from django.utils import timezone as django_timezone
+
+        response = LocationServices.get_location(location_id)
+        location_data = response["location"]
+
+        raw_added = location_data.get("dateAdded")
+        date_added = parse_datetime(raw_added) if raw_added else None
+        if date_added is None:
+            date_added = django_timezone.now()
+
+        email = (location_data.get("email") or "").strip()
+        if not email:
+            email = "noreply@placeholder.invalid"
+
+        location_obj, created = Location.objects.update_or_create(
+            id=str(location_data["id"]),
+            defaults={
+                "company_id": location_data["companyId"],
+                "name": location_data["name"],
+                "address": location_data["address"],
+                "city": location_data["city"],
+                "state": location_data["state"],
+                "country": location_data["country"],
+                "postal_code": location_data["postalCode"],
+                "website": location_data.get("website"),
+                "timezone": location_data["timezone"],
+                "first_name": location_data["firstName"],
+                "last_name": location_data["lastName"],
+                "email": email,
+                "phone": location_data["phone"],
+                "automatic_mobile_app_invite": location_data.get("automaticMobileAppInvite", False),
+                "date_added": date_added,
+                "domain": location_data.get("domain") or "",
+                "is_active": True,
+            },
+        )
+        return location_obj, created
+
+    @staticmethod
+    def pull_locations(loc=None):
+        """
+        Fetch locations from GHL and persist to accounts.Location.
+        Pass loc (single location_id str) or None to sync every distinct location_id on GHLAuthCredentials.
+        Pagination page size for list endpoints lives in LIMIT_PER_PAGE when extended.
+        """
+        if loc:
+            location_ids = [loc] if isinstance(loc, str) else list(loc)
+        else:
+            location_ids = list(
+                GHLAuthCredentials.objects.exclude(location_id__isnull=True)
+                .exclude(location_id="")
+                .values_list("location_id", flat=True)
+                .distinct()
+            )
+
+        import_summary = []
+
+        for i in range(0, len(location_ids), LIMIT_PER_PAGE):
+            chunk = location_ids[i : i + LIMIT_PER_PAGE]
+            for location_id in chunk:
+                try:
+                    location_obj, created = LocationServices.pull_location(location_id)
+                    import_summary.append(
+                        f"{location_id}: {'Created' if created else 'Updated'} location {location_obj.name}"
+                    )
+                except (LocationServicesError, GHLCredentialsError) as e:
+                    import_summary.append(f"{location_id}: Failed to import location - {str(e)}")
+
+        return import_summary
+
