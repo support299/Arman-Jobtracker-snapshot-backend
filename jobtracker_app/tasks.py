@@ -12,6 +12,7 @@ from .helpers import (
     resolve_ghl_credentials_for_invoice,
     search_ghl_contact,
     send_invoice,
+    trip_surcharge_amount_for_job,
     update_contact,
 )
 from .models import Job
@@ -165,7 +166,10 @@ def handle_completed_job_invoice(job_id):
     try:
         job = (
             Job.objects.select_related(
-                "account", "contact", "submission__contact"
+                "account",
+                "contact",
+                "submission__contact",
+                "submission__location",
             )
             .prefetch_related("items__service")
             .filter(id=job_id)
@@ -185,23 +189,6 @@ def handle_completed_job_invoice(job_id):
     except Exception as e:
         print(f"Error handling completed job invoice: {str(e)}")
         return {"error": str(e)}
-
-
-def _trip_surcharge_amount_for_job(job):
-    """
-    Trip fee for webhook line items: use job.total_surcharge when set; otherwise
-    submission.location.trip_surcharge. If neither has a positive value, return zero
-    (no trip line is added).
-    """
-    stored = getattr(job, "total_surcharge", None) or Decimal("0.00")
-    if stored > Decimal("0.00"):
-        return stored.quantize(Decimal("0.01"))
-    submission = getattr(job, "submission", None)
-    if submission and getattr(submission, "location_id", None):
-        loc = submission.location
-        if loc and loc.trip_surcharge and loc.trip_surcharge > Decimal("0.00"):
-            return Decimal(loc.trip_surcharge).quantize(Decimal("0.01"))
-    return Decimal("0.00")
 
 
 @shared_task
@@ -279,7 +266,7 @@ def send_job_completion_webhook(job_id):
             selected_services.append(service_data)
             print(f"   ➕ Added service: {service_data}")
 
-        trip_amount = _trip_surcharge_amount_for_job(job)
+        trip_amount = trip_surcharge_amount_for_job(job)
         if trip_amount > Decimal("0.00"):
             trip_line = {
                 "id": None,

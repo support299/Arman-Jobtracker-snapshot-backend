@@ -1,5 +1,6 @@
 import requests
 from datetime import datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from accounts.models import GHLAuthCredentials, Contact
@@ -168,6 +169,22 @@ def resolve_ghl_credentials_for_invoice(data=None, job_id=None):
     return GHLAuthCredentials.objects.first()
 
 
+def trip_surcharge_amount_for_job(job):
+    """
+    Trip fee for invoice/webhook line items: prefer job.total_surcharge when set;
+    otherwise submission.location.trip_surcharge. Zero means no separate trip line.
+    """
+    stored = getattr(job, "total_surcharge", None) or Decimal("0.00")
+    if stored > Decimal("0.00"):
+        return stored.quantize(Decimal("0.01"))
+    submission = getattr(job, "submission", None)
+    if submission:
+        loc = getattr(submission, "location", None)
+        if loc and loc.trip_surcharge and loc.trip_surcharge > Decimal("0.00"):
+            return Decimal(loc.trip_surcharge).quantize(Decimal("0.01"))
+    return Decimal("0.00")
+
+
 def build_invoice_payload_from_job(job):
     """
     Construct the payload expected by the invoice flow based on a Job instance.
@@ -195,7 +212,11 @@ def build_invoice_payload_from_job(job):
             "price": float(item.price or 0),
         })
 
+    trip_amt = trip_surcharge_amount_for_job(job)
+    consolidated_invoice_line = False
+
     if not services:
+        consolidated_invoice_line = True
         services.append({
             "name": job.title or "Service",
             "description": job.description or "",
@@ -209,12 +230,23 @@ def build_invoice_payload_from_job(job):
             and (float(job.discount_value or 0) > 0)
         )
         if has_discount:
+            consolidated_invoice_line = True
             services = [{
                 "name": job.title or "Service",
                 "description": job.description or "",
                 "quantity": 1,
                 "price": revised_total,
             }]
+
+    # Itemized lines only: trip/surcharge is stored separately from line items but is part of job.total_price.
+    # A single consolidated line uses revised_total, which already includes surcharge — do not add twice.
+    if not consolidated_invoice_line and trip_amt > Decimal("0.00"):
+        services.append({
+            "name": "Trip Surcharge",
+            "description": "Trip / distance surcharge",
+            "quantity": 1,
+            "price": float(trip_amt),
+        })
 
     contact_email = job.customer_email
     contact_name = job.customer_name
