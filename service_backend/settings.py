@@ -205,8 +205,14 @@ CORS_ALLOWED_HEADERS = [
 
 GOOGLE_PLACES_API_KEY = config('GOOGLE_PLACES_API_KEY', '')
 
-
-
+# GHL Marketplace OAuth (chooselocation). Client/scope env vars match accounts OAuth.
+# redirect_uri for location connect = frontend Origin (or Referer) + GHL_LOCATION_CONNECT_REDIRECT_PATH.
+GHL_CLIENT_ID = config('GHL_CLIENT_ID', default='')
+GHL_OAUTH_SCOPE = config('SCOPE', default='')
+GHL_LOCATION_CONNECT_REDIRECT_PATH = config(
+    'GHL_LOCATION_CONNECT_REDIRECT_PATH',
+    default='/oauth/location-callback',
+)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

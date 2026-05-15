@@ -1,7 +1,14 @@
 # urls.py
-from django.urls import path, include
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 from . import views
+
+router = DefaultRouter()
+router.register(
+    "location-management/locations",
+    views.LocationManagementViewSet,
+    basename="location-management-location",
+)
 
 # Complete Admin API URLs
 urlpatterns = [
@@ -119,4 +126,4 @@ urlpatterns = [
     path('users/<int:pk>/', views.UserDetailView.as_view(), name='user-detail'),
     path('users/<int:pk>/unassign-future-jobs/', views.UserFutureJobUnassignView.as_view(), name='user-unassign-future-jobs'),
 
-]
+] + router.urls

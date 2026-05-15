@@ -63,11 +63,13 @@ def tokens(request):
     if not authorization_code:
         return JsonResponse({"error": "Authorization code not found"}, status=400)
 
+    redirect_uri = request.GET.get("redirect_uri") or GHL_REDIRECTED_URI
+
     data = {
         "grant_type": "authorization_code",
         "client_id": GHL_CLIENT_ID,
         "client_secret": GHL_CLIENT_SECRET,
-        "redirect_uri": GHL_REDIRECTED_URI,
+        "redirect_uri": redirect_uri,
         "code": authorization_code,
     }
 

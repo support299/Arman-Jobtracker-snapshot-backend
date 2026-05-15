@@ -1,19 +1,21 @@
 # views.py
-from rest_framework import generics, status, permissions
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import generics, viewsets, status, permissions
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 from rest_framework.views import APIView
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth import authenticate
 from django.db.models import Count, Avg, Prefetch
-from django.db import transaction
+from django.db import transaction, models
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from decimal import Decimal
 import requests
 import os
-from django.db import models
+from urllib.parse import quote, urlparse
+
+from django.conf import settings as django_settings
 from .models import Service, ServiceSettings
 from .serializers import ServiceSettingsSerializer
 from accounts.permissions import AccountScopedPermission
@@ -234,7 +236,89 @@ class LocationDetailView(AccountScopedQuerysetMixin, generics.RetrieveUpdateDest
         instance.save()
 
 
+class LocationManagementViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
+    """
+    Account-scoped location CRUD for the location management tool.
+    Only users with is_admin=True may access (same as LocationListCreateView / LocationDetailView).
 
+    POST .../onboard/ returns the GHL chooselocation OAuth URL; redirect_uri is built from the
+    request frontend origin (Origin or Referer) plus settings.GHL_LOCATION_CONNECT_REDIRECT_PATH.
+    """
+    serializer_class = LocationSerializer
+    permission_classes = [AccountScopedPermission, IsAdminPermission]
+    account_lookup = "account"
+    queryset = Location.objects.all()
+
+    @staticmethod
+    def _frontend_base_url(request):
+        origin = (request.headers.get("Origin") or "").strip()
+        if origin:
+            return origin.rstrip("/")
+        referer = request.headers.get("Referer") or ""
+        if referer:
+            parsed = urlparse(referer)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        return ""
+
+    @action(detail=False, methods=["post"], url_path="onboard")
+    def onboard(self, request):
+        base = self._frontend_base_url(request)
+        if not base:
+            return Response(
+                {
+                    "detail": (
+                        "Could not determine frontend URL. Send an Origin header, "
+                        "or a Referer header, when requesting the connect URL."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        path = getattr(django_settings, "GHL_LOCATION_CONNECT_REDIRECT_PATH", "") or "/"
+        if not path.startswith("/"):
+            path = "/" + path
+        redirect_uri = f"{base}{path}"
+
+        client_id = getattr(django_settings, "GHL_CLIENT_ID", "") or ""
+        scope = getattr(django_settings, "GHL_OAUTH_SCOPE", "") or ""
+        if not client_id or not scope:
+            return Response(
+                {
+                    "detail": (
+                        "GHL OAuth is not configured: set GHL_CLIENT_ID and SCOPE in the environment."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        q_redirect = quote(redirect_uri, safe="")
+        q_scope = quote(scope, safe="")
+        auth_url = (
+            "https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&"
+            f"redirect_uri={q_redirect}&"
+            f"client_id={quote(client_id, safe='')}&"
+            f"scope={q_scope}"
+        )
+        return Response({"auth_url": auth_url})
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action == "list":
+            queryset = queryset.filter(is_active=True)
+            search = self.request.query_params.get("search", None)
+            if search:
+                queryset = queryset.filter(
+                    models.Q(name__icontains=search)
+                    | models.Q(address__icontains=search)
+                )
+        return queryset.order_by("name")
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save()
+
+    def perform_create(self, serializer):
+        serializer.save(account=getattr(self.request, "account", None))
 
 
 # Service Views
