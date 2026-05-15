@@ -1,7 +1,7 @@
 
 import requests
 from celery import shared_task
-from accounts.models import GHLAuthCredentials, Calendar
+from accounts.models import GHLAuthCredentials, Calendar, GHLCompanyAuth
 from decouple import config
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -19,41 +19,194 @@ from django.utils import timezone as django_timezone
 from django.utils.dateparse import parse_datetime
 from service_app.models import Appointment, User, User
 import pytz
+import logging
+
+logger = logging.getLogger(__name__)
+
+GHL_OAUTH_TOKEN_URL = "https://services.leadconnectorhq.com/oauth/token"
+GHL_LOCATION_TOKEN_URL = "https://services.leadconnectorhq.com/oauth/locationToken"
+GHL_API_VERSION = "2021-07-28"
+
+
+def _fetch_location_token(agency_access_token, company_id, location_id):
+    """
+    Exchange agency (company) access token for a location-level token via GHL API.
+    Returns parsed JSON on success, or None on failure.
+    """
+    response = requests.post(
+        GHL_LOCATION_TOKEN_URL,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "Version": GHL_API_VERSION,
+            "Authorization": f"Bearer {agency_access_token}",
+        },
+        data={
+            "companyId": company_id,
+            "locationId": location_id,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _upsert_location_credentials(token_data):
+    """Persist location OAuth tokens from /oauth/locationToken response."""
+    location_id = (token_data.get("locationId") or "").strip()
+    if not location_id:
+        raise ValueError("locationToken response missing locationId")
+
+    user_id = (token_data.get("userId") or "").strip()
+    if not user_id:
+        raise ValueError(f"locationToken response missing userId for location_id={location_id}")
+
+    GHLAuthCredentials.objects.update_or_create(
+        location_id=location_id,
+        defaults={
+            "access_token": token_data.get("access_token") or "",
+            "refresh_token": token_data.get("refresh_token") or "",
+            "expires_in": token_data.get("expires_in") or 0,
+            "scope": token_data.get("scope") or "",
+            "user_type": token_data.get("userType") or "",
+            "company_id": token_data.get("companyId") or "",
+            "user_id": user_id,
+        },
+    )
+
+
+def _refresh_location_tokens_for_company(company_auth):
+    """
+    After agency token refresh, fetch fresh location tokens for every onboarded
+    subaccount (GHLAuthCredentials) belonging to this company.
+    """
+    company_id = company_auth.company_id
+    agency_access_token = (company_auth.access_token or "").strip()
+    if not agency_access_token:
+        return {"success": 0, "errors": 0, "skipped": 0}
+
+    location_rows = GHLAuthCredentials.objects.filter(company_id=company_id).exclude(
+        location_id__isnull=True
+    ).exclude(location_id="")
+
+    loc_success = 0
+    loc_errors = 0
+    loc_skipped = 0
+
+    for cred in location_rows:
+        location_id = (cred.location_id or "").strip()
+        if not location_id:
+            loc_skipped += 1
+            continue
+        try:
+            token_data = _fetch_location_token(agency_access_token, company_id, location_id)
+            _upsert_location_credentials(token_data)
+            loc_success += 1
+            logger.info(
+                "refresh_agency_tokens: refreshed location token company_id=%s location_id=%s",
+                company_id,
+                location_id,
+            )
+        except Exception as exc:
+            loc_errors += 1
+            logger.exception(
+                "refresh_agency_tokens: location token failed company_id=%s location_id=%s: %s",
+                company_id,
+                location_id,
+                exc,
+            )
+
+    return {"success": loc_success, "errors": loc_errors, "skipped": loc_skipped}
 
 
 @shared_task
-def make_api_call():
-    credentials = GHLAuthCredentials.objects.first()
-    
-    print("credentials tokenL", credentials)
-    refresh_token = credentials.refresh_token
+def refresh_agency_tokens():
+    """
+    Refresh company-level (agency) GHL OAuth tokens stored in GHLCompanyAuth.
+    """
+    company_auth_rows = GHLCompanyAuth.objects.all()
+    logger.info("refresh_agency_tokens: processing %s company auth row(s)", company_auth_rows.count())
 
-    
-    response = requests.post('https://services.leadconnectorhq.com/oauth/token', data={
-        'grant_type': 'refresh_token',
-        'client_id': config("GHL_CLIENT_ID"),
-        'client_secret': config("GHL_CLIENT_SECRET"),
-        'refresh_token': refresh_token
-    })
-    
-    new_tokens = response.json()
+    success_count = 0
+    error_count = 0
 
-    print("new tokens: ", new_tokens)
+    for company_auth in company_auth_rows:
+        try:
+            refresh_token = (company_auth.refresh_token or "").strip()
+            if not refresh_token:
+                logger.warning(
+                    "refresh_agency_tokens: missing refresh token for company_id=%s",
+                    company_auth.company_id,
+                )
+                error_count += 1
+                continue
 
-    obj, created = GHLAuthCredentials.objects.update_or_create(
-            location_id= new_tokens.get("locationId"),
-            defaults={
-                "access_token": new_tokens.get("access_token"),
-                "refresh_token": new_tokens.get("refresh_token"),
-                "expires_in": new_tokens.get("expires_in"),
-                "scope": new_tokens.get("scope"),
-                "user_type": new_tokens.get("userType"),
-                "company_id": new_tokens.get("companyId"),
-                "user_id":new_tokens.get("userId"),
+            response = requests.post(
+                GHL_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": config("GHL_CLIENT_ID"),
+                    "client_secret": config("GHL_CLIENT_SECRET"),
+                    "refresh_token": refresh_token,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            resp_data = response.json()
 
-            }
-        )
-    
+            access_token = (resp_data.get("access_token") or "").strip()
+            if not access_token:
+                logger.warning(
+                    "refresh_agency_tokens: no access_token returned for company_id=%s body=%s",
+                    company_auth.company_id,
+                    resp_data,
+                )
+                error_count += 1
+                continue
+
+            company_auth.access_token = access_token
+            company_auth.refresh_token = (resp_data.get("refresh_token") or company_auth.refresh_token or "").strip()
+            expires_in = resp_data.get("expires_in")
+            if isinstance(expires_in, int):
+                company_auth.expires_in = expires_in
+            company_auth.scope = resp_data.get("scope") or company_auth.scope or ""
+            company_auth.user_id = resp_data.get("userId") or company_auth.user_id or ""
+            company_auth.save(
+                update_fields=[
+                    "access_token",
+                    "refresh_token",
+                    "expires_in",
+                    "scope",
+                    "user_id",
+                    "updated_at",
+                ]
+            )
+            success_count += 1
+            logger.info("refresh_agency_tokens: refreshed company_id=%s", company_auth.company_id)
+
+            loc_stats = _refresh_location_tokens_for_company(company_auth)
+            logger.info(
+                "refresh_agency_tokens: location tokens company_id=%s success=%s errors=%s skipped=%s",
+                company_auth.company_id,
+                loc_stats["success"],
+                loc_stats["errors"],
+                loc_stats["skipped"],
+            )
+        except Exception as exc:
+            error_count += 1
+            logger.exception(
+                "refresh_agency_tokens: failed for company_id=%s: %s",
+                company_auth.company_id,
+                exc,
+            )
+
+    logger.info(
+        "refresh_agency_tokens: done success=%s errors=%s",
+        success_count,
+        error_count,
+    )
+    return {"success": success_count, "errors": error_count}
+
 
 
 @shared_task

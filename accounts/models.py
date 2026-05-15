@@ -20,6 +20,28 @@ class GHLAuthCredentials(models.Model):
 
     def __str__(self):
         return f"{self.user_id} - {self.company_id}"
+
+
+
+class GHLCompanyAuth(models.Model):
+    """
+    Company-level (agency-wide) GHL OAuth credentials, captured at OAuth time so we can
+    later call /oauth/installedLocations to discover sub-accounts added to the marketplace
+    install AFTER the original OAuth (which only captures what was installed at that moment).
+
+    One row per GHL company_id. Saved during the bulk install branch in core.views.tokens.
+    """
+    company_id = models.CharField(max_length=255, primary_key=True)
+    access_token = models.TextField()
+    refresh_token = models.TextField(blank=True, default="")
+    expires_in = models.IntegerField(default=0)
+    scope = models.TextField(blank=True, default="")
+    user_id = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"GHLCompanyAuth: {self.company_id}"
     
 
 class GHLCustomField(models.Model):
