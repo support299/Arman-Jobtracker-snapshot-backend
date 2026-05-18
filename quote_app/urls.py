@@ -15,6 +15,9 @@ urlpatterns = [
     # QUOTE GENERATOR FLOW
     # ============================================================================
     
+    # Public account info (location_id required; no auth; no tokens)
+    path('account-info/', views.AccountInfoView.as_view(), name='account-info'),
+
     # Step 1: Get initial data (locations, services, size ranges)
     path('initial-data/', views.InitialDataView.as_view(), name='initial-data'),
 

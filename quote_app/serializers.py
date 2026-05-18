@@ -11,7 +11,8 @@ from .models import (
     CustomerOptionResponse, CustomerSubQuestionResponse, CustomerPackageQuote,CustomService, QuoteSchedule, CustomerSubmissionImage
 )
 
-from accounts.models import Address, Contact
+from accounts.models import Address, Contact, GHLAuthCredentials
+from accounts.models import Location as GHLLocation
 
 from service_app.serializers import ServiceSettingsSerializer
 
@@ -536,3 +537,53 @@ class RescheduleConvertToJobSerializer(serializers.Serializer):
         allow_blank=True,
         help_text='Optional: override scheduled time before conversion (same as booking).',
     )
+
+
+class GHLAccountPublicSerializer(serializers.ModelSerializer):
+    """Public GHL account info for quote flows (no OAuth tokens)."""
+
+    account_name = serializers.CharField(source='company_name', read_only=True)
+    logo_url = serializers.URLField(source='company_logo_url', read_only=True)
+    website = serializers.SerializerMethodField()
+    domain = serializers.SerializerMethodField()
+    location_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GHLAuthCredentials
+        fields = [
+            'id',
+            'location_id',
+            'company_id',
+            'account_name',
+            'logo_url',
+            'timezone',
+            'user_type',
+            'is_active',
+            'website',
+            'domain',
+            'location_name',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+    def _ghl_location(self, obj):
+        cache = self.context.setdefault('_ghl_location_cache', {})
+        loc_id = (obj.location_id or '').strip()
+        if not loc_id:
+            return None
+        if loc_id not in cache:
+            cache[loc_id] = GHLLocation.objects.filter(pk=loc_id).first()
+        return cache[loc_id]
+
+    def get_website(self, obj):
+        loc = self._ghl_location(obj)
+        return loc.website if loc else None
+
+    def get_domain(self, obj):
+        loc = self._ghl_location(obj)
+        return loc.domain if loc else None
+
+    def get_location_name(self, obj):
+        loc = self._ghl_location(obj)
+        return loc.name if loc else None

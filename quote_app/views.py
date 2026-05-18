@@ -33,6 +33,7 @@ from .serializers import (
     ServiceQuestionResponseSerializer, PricingCalculationRequestSerializer,SubmitFinalQuoteSerializer,ContactSerializer,
     ConditionalQuestionRequestSerializer, CustomerPackageQuoteSerializer,ConditionalQuestionResponseSerializer,ServiceResponseSubmissionSerializer,QuoteScheduleUpdateSerializer, CustomerSubmissionImageSerializer,
     JobRescheduleQuoteCreateSerializer, RescheduleConvertToJobSerializer,
+    GHLAccountPublicSerializer,
 )
 from service_app.serializers import GlobalBasePriceSerializer, UserSerializer
 from service_app.models import User
@@ -114,6 +115,30 @@ class AddressByContactView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class AccountInfoView(APIView):
+    """
+    Public account branding/settings for quote flows.
+
+    Requires location_id (query param, body, or X-Location-Id header). Unauthenticated.
+    Returns GHL account metadata only — never access/refresh tokens.
+    """
+    permission_classes = [AccountScopedPermission, AllowAny]
+
+    def get(self, request):
+        account = getattr(request, 'account', None)
+        if not account:
+            return Response(
+                {
+                    'error': (
+                        'Account could not be determined. Provide location_id in query, '
+                        'body, or X-Location-Id header.'
+                    ),
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(GHLAccountPublicSerializer(account).data)
+
+
 # Step 1: Get initial data (locations, services, size ranges)
 class InitialDataView(APIView):
     """Get initial data for the quote form (scoped to account via location_id when unauthenticated)."""
@@ -125,13 +150,15 @@ class InitialDataView(APIView):
         services = Service.objects.filter(is_active=True, account=account).order_by('order', 'name')
         size_ranges = GlobalSizePackage.objects.filter(account=account).order_by('order', 'min_sqft')
         
-        # Get project-based employees (active only, exclude Django superusers)
+        # Project-based employees for this account only (active, exclude Django superusers)
         project_employees = EmployeeProfile.objects.filter(
+            account=account,
             pay_scale_type='project',
             status='active',
             user__isnull=False,
             user__is_active=True,
             user__is_superuser=False,
+            user__account=account,
         ).select_related('user').order_by('user__first_name', 'user__last_name', 'user__username')
 
         project_users = [emp.user for emp in project_employees]

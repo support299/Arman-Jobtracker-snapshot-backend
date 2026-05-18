@@ -56,7 +56,7 @@ class GHLLocationManagementViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        path = getattr(django_settings, "GHL_LOCATION_CONNECT_REDIRECT_PATH", "/api/auth/callback/") or "/"
+        path = getattr(django_settings, "GHL_LOCATION_CONNECT_REDIRECT_PATH", "/api/accounts/auth/callback/") or "/"
         if not path.startswith("/"):
             path = "/" + path
         redirect_uri = f"{base}{path}"
