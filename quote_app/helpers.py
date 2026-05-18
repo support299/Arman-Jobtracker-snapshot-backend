@@ -1,4 +1,5 @@
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from accounts.models import GHLAuthCredentials, GHLCustomField
 import requests
@@ -129,13 +130,20 @@ def create_or_update_ghl_contact(submission, is_submit=False):
             print("ℹ️ No contacts found in GHL.")
 
         # Step 3: Build custom fields
-        booking_url = f"{config('BASE_FRONTEND_URI')}/booking?submission_id={submission.id}"
+        base_frontend = config('BASE_FRONTEND_URI').rstrip('/')
+        booking_url = (
+            f"{base_frontend}/booking?"
+            f"{urlencode({'submission_id': str(submission.id), 'location_id': location_id})}"
+        )
         quote_url = (
-            f"{config('BASE_FRONTEND_URI')}/quote/details/{submission.id}"
-            f"?first_name={submission.contact.first_name}"
-            f"&last_name={submission.contact.last_name}"
-            f"&phone={submission.contact.phone}"
-            f"&email={submission.contact.email}"
+            f"{base_frontend}/quote/details/{submission.id}?"
+            f"{urlencode({
+                'first_name': submission.contact.first_name or '',
+                'last_name': submission.contact.last_name or '',
+                'phone': submission.contact.phone or '',
+                'email': submission.contact.email or '',
+                'location_id': location_id,
+            })}"
         )
         
         # Get Quote Link custom field using account and field name
