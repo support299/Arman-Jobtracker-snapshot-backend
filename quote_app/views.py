@@ -41,7 +41,7 @@ from payroll_app.models import EmployeeProfile
 from jobtracker_app.models import Job
 from jobtracker_app.serializers import JobSerializer
 
-from quote_app.helpers import create_or_update_ghl_contact
+from quote_app.helpers import create_or_update_ghl_contact, get_global_minimum_base_price_for_submission
 from accounts.utils import (
     get_ghl_media_storage_for_location,
     upload_file_to_ghl_media,
@@ -1211,11 +1211,7 @@ class SubmitFinalQuoteView(APIView):
                 selection.final_total_price = line_total
                 selection.save()
 
-        global_settings = GlobalBasePrice.objects.first()
-        if global_settings:
-            base_price = global_settings.base_price
-        else:
-            base_price = 0  # fallback if not configured
+        base_price = get_global_minimum_base_price_for_submission(submission)
 
         # apply minimum price rule
         if final_total < base_price:
@@ -1772,6 +1768,9 @@ class RemoveServiceFromSubmissionView(APIView):
                     submission.total_surcharges +
                     (submission.custom_service_total or Decimal('0.00'))
                 )
+                minimum_total = get_global_minimum_base_price_for_submission(submission)
+                if submission.final_total < minimum_total:
+                    submission.final_total = minimum_total
                 submission.save()
 
                 return Response({

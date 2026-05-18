@@ -1,6 +1,9 @@
+from decimal import Decimal
+
 from accounts.models import GHLAuthCredentials, GHLCustomField
 import requests
 from decouple import config
+from service_app.models import GlobalBasePrice
 
 
 def resolve_ghl_credentials_for_submission(submission):
@@ -36,6 +39,24 @@ def resolve_ghl_credentials_for_submission(submission):
         return GHLAuthCredentials.objects.filter(location_id=location_id).first()
 
     return None
+
+
+def get_global_minimum_base_price_for_submission(submission) -> Decimal:
+    """
+    Return the account-scoped global minimum quote total for a submission.
+
+    Uses submission.account (or contact/location fallbacks). Returns 0 if no account
+    or no GlobalBasePrice row exists for that account.
+    """
+    account = resolve_ghl_credentials_for_submission(submission)
+    if account is None:
+        return Decimal('0.00')
+
+    settings = GlobalBasePrice.objects.filter(account=account).first()
+    if settings is None:
+        return Decimal('0.00')
+
+    return Decimal(settings.base_price or 0)
 
 
 def resolve_location_id_for_submission(submission, credentials):

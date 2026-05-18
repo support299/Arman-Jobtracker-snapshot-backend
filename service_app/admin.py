@@ -1,10 +1,12 @@
 from django.contrib import admin
-from .models import Package,GlobalSizePackage,User
+from .models import Package,GlobalSizePackage,User,GlobalPackageTemplate,ServicePackageSizeMapping
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
 
 admin.site.register(Package)
 admin.site.register(GlobalSizePackage)
+admin.site.register(GlobalPackageTemplate)
+admin.site.register(ServicePackageSizeMapping)
 
 @admin.register(User)
 class UserAdmin(DjangoUserAdmin):

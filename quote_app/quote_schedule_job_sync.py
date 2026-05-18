@@ -8,8 +8,9 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from service_app.models import GlobalBasePrice, User
+from service_app.models import User
 
+from quote_app.helpers import get_global_minimum_base_price_for_submission
 from .models import CustomService, CustomerServiceSelection, CustomerPackageQuote
 
 
@@ -116,24 +117,22 @@ def compute_job_defaults_and_items(submission, quote_schedule):
         total_price += price
         total_duration += default_item_duration
 
-    global_price = GlobalBasePrice.objects.first()
-    if global_price:
-        try:
-            minimum_total = _quantize_currency(Decimal(global_price.base_price))
-            if total_price < minimum_total:
-                adjustment_amount = minimum_total - total_price
-                if adjustment_amount > Decimal("0.00"):
-                    job_items.append(
-                        {
-                            "service": None,
-                            "custom_name": "Adjustments",
-                            "price": _quantize_currency(adjustment_amount),
-                            "duration_hours": Decimal("0.00"),
-                        }
-                    )
-                    total_price = minimum_total
-        except Exception:
-            pass
+    try:
+        minimum_total = _quantize_currency(get_global_minimum_base_price_for_submission(submission))
+        if minimum_total > Decimal("0.00") and total_price < minimum_total:
+            adjustment_amount = minimum_total - total_price
+            if adjustment_amount > Decimal("0.00"):
+                job_items.append(
+                    {
+                        "service": None,
+                        "custom_name": "Adjustments",
+                        "price": _quantize_currency(adjustment_amount),
+                        "duration_hours": Decimal("0.00"),
+                    }
+                )
+                total_price = minimum_total
+    except Exception:
+        pass
 
     surcharge_amount = _quantize_currency(total_surcharge_from_quotes)
     if surcharge_amount <= Decimal("0.00"):
