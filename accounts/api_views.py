@@ -10,7 +10,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from accounts.models import Location
-from accounts.permissions import AccountScopedPermission, IsAdminPermission
+from accounts.permissions import AccountScopedPermission, IsSuperuserPermission
 from accounts.serializers import GHLLocationManagementSerializer
 
 
@@ -27,7 +27,7 @@ class GHLLocationManagementViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = GHLLocationManagementSerializer
-    permission_classes = [AccountScopedPermission, IsAdminPermission]
+    permission_classes = [AccountScopedPermission, IsSuperuserPermission]
     queryset = Location.objects.all()
     lookup_field = "pk"
 
