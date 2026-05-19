@@ -3,11 +3,25 @@ from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from accounts.models import GHLAuthCredentials, Contact
+from accounts.currency import currency_for_ghl_location
+from accounts.models import GHLAuthCredentials, Contact, Location as GHLLocation
 from jobtracker_app.models import Job
 
 
-def get_or_create_product(access_token, location_id, product_name, custom_data=None):
+def resolve_currency_for_invoice(credentials=None, location_id=None):
+    """
+    ISO 4217 currency for GHL invoice/product APIs from accounts.Location (by GHL location id).
+    """
+    loc_id = (location_id or "").strip()
+    if not loc_id and credentials is not None:
+        loc_id = (getattr(credentials, "location_id", None) or "").strip()
+    if not loc_id:
+        return currency_for_ghl_location(None)
+    ghl_location = GHLLocation.objects.filter(pk=loc_id).first()
+    return currency_for_ghl_location(ghl_location)
+
+
+def get_or_create_product(access_token, location_id, product_name, custom_data=None, currency=None):
     """
     Look up an existing product by name within the provided GHL location.
     If it does not exist, create a lightweight SERVICE product so the invoice
@@ -38,10 +52,12 @@ def get_or_create_product(access_token, location_id, product_name, custom_data=N
         print(f"Error searching for product '{product_name}': {exc}")
 
     # Fallback: create the product so invoices can continue
-    return create_product(access_token, location_id, product_name, custom_data or {})
+    return create_product(
+        access_token, location_id, product_name, custom_data or {}, currency=currency
+    )
 
 
-def create_product(access_token, location_id, product_name, custom_data=None):
+def create_product(access_token, location_id, product_name, custom_data=None, currency=None):
     headers = {
         'Accept': 'application/json',
         'Authorization': f'Bearer {access_token}',
@@ -50,6 +66,9 @@ def create_product(access_token, location_id, product_name, custom_data=None):
     }
 
     custom_data = custom_data or {}
+    currency_code = (currency or "").strip().upper() or resolve_currency_for_invoice(
+        None, location_id=location_id
+    )
     try:
         price = float(custom_data.get("price") or custom_data.get("Price") or 0)
     except (TypeError, ValueError):
@@ -76,7 +95,7 @@ def create_product(access_token, location_id, product_name, custom_data=None):
                 "name": "Default",
                 "type": "one_time",
                 "amount": price,
-                "currency": "USD",
+                "currency": currency_code,
             }
         ],
     }
@@ -337,7 +356,10 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
 
     if not contact:
         return {"error": "Contact not found"}
-    
+
+    currency_code = resolve_currency_for_invoice(credentials)
+    print(f"📍 [INVOICE] Using currency={currency_code} for location_id={credentials.location_id}")
+
     line_items = []
 
     for service in services:
@@ -348,7 +370,8 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
             credentials.access_token,
             credentials.location_id,
             product_name,
-            custom_data=service
+            custom_data=service,
+            currency=currency_code,
         )
         if not product_info:
             print(f"Skipping service: {product_name} (no product info)")
@@ -357,7 +380,7 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
         line_item = {
             "name": product_name,
             "description": service.get("description", ""),
-            "currency": "USD",
+            "currency": currency_code,
             "qty": service.get("quantity", 1),
             "amount": service.get("price", 0.0),
             "productId": product_info["productId"],
@@ -365,7 +388,8 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
         if product_info.get("priceId"):
             line_item["priceId"] = product_info["priceId"]
 
-        if service.get("price", 0.0) > 0:
+        # US sales tax line only for USD invoices (legacy behavior).
+        if currency_code == "USD" and service.get("price", 0.0) > 0:
             line_item["taxes"] = [
                 {
                     "_id": "sales-tax-8-25",
@@ -419,7 +443,7 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
         "altType":'location',
         "name": name,
         "businessDetails":businessDetails,
-        "currency":"USD",
+        "currency": currency_code,
         "items": line_items,
         "discount":discount,
         "contactDetails":contactDetails,

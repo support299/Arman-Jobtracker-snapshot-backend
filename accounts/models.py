@@ -354,6 +354,7 @@ class Location(models.Model):
     city = models.CharField(max_length=100)
     state = models.CharField(max_length=100)
     country = models.CharField(max_length=10)
+    currency = models.CharField(max_length=3, default="USD", blank=True)
     postal_code = models.CharField(max_length=20)
     website = models.CharField(max_length=255, null=True, blank=True)
     timezone = models.CharField(max_length=100)
@@ -377,8 +378,11 @@ class Location(models.Model):
         return dict(self.COUNTRY_CHOICES).get(raw.upper(), raw)
 
     def save(self, *args, **kwargs):
+        from accounts.currency import currency_for_country
+
         if self.country:
             self.country = self.country.strip().upper()
+            self.currency = currency_for_country(self.country)
         super().save(*args, **kwargs)
 
     def __str__(self):

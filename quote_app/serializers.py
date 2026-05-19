@@ -547,6 +547,7 @@ class GHLAccountPublicSerializer(serializers.ModelSerializer):
     website = serializers.SerializerMethodField()
     domain = serializers.SerializerMethodField()
     location_name = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
 
     class Meta:
         model = GHLAuthCredentials
@@ -562,6 +563,7 @@ class GHLAccountPublicSerializer(serializers.ModelSerializer):
             'website',
             'domain',
             'location_name',
+            'currency',
             'created_at',
             'updated_at',
         ]
@@ -587,3 +589,8 @@ class GHLAccountPublicSerializer(serializers.ModelSerializer):
     def get_location_name(self, obj):
         loc = self._ghl_location(obj)
         return loc.name if loc else None
+
+    def get_currency(self, obj):
+        from accounts.currency import currency_for_ghl_location
+
+        return currency_for_ghl_location(self._ghl_location(obj))

@@ -22,6 +22,7 @@ class LocationAdmin(admin.ModelAdmin):
     list_display = (
         "name",
         "country_label",
+        "currency",
         "city",
         "state",
         "timezone",
@@ -43,7 +44,7 @@ class LocationAdmin(admin.ModelAdmin):
         "domain",
     )
     ordering = ("name",)
-    readonly_fields = ("id", "date_added")
+    readonly_fields = ("id", "date_added", "currency")
     date_hierarchy = "date_added"
     save_on_top = True
 
@@ -62,6 +63,7 @@ class LocationAdmin(admin.ModelAdmin):
                     "city",
                     "state",
                     "country",
+                    "currency",
                     "postal_code",
                     "timezone",
                 ),
