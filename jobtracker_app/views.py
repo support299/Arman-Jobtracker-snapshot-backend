@@ -210,7 +210,9 @@ class IsAuthenticatedOrReadOnly(permissions.BasePermission):
 
 class JobViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     """Jobs scoped to current account. Admins see all in account; normal users see only jobs assigned to them."""
-    queryset = Job.objects.all().select_related('submission', 'contact', 'address').prefetch_related('images', 'images__uploaded_by')
+    queryset = Job.objects.all().select_related(
+        'submission', 'contact', 'address', 'account',
+    ).prefetch_related('images', 'images__uploaded_by')
     serializer_class = JobSerializer
     permission_classes = [AccountScopedPermission, IsAuthenticatedOrReadOnly]
     account_lookup = "account"
@@ -499,7 +501,9 @@ class PublicJobViewSet(AccountScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet
     List/detail behave like an admin view: all jobs in the account with the same query filters.
     """
 
-    queryset = Job.objects.all().select_related('submission', 'contact', 'address').prefetch_related(
+    queryset = Job.objects.all().select_related(
+        'submission', 'contact', 'address', 'account',
+    ).prefetch_related(
         'images', 'images__uploaded_by'
     )
     serializer_class = JobSerializer

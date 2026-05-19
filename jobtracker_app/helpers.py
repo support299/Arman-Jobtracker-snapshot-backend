@@ -406,11 +406,13 @@ def create_invoice(name, contact_id, services, credentials, customer_address, ad
         "email":[contact.email]
     }
 
-    tz_name = (getattr(credentials, "timezone", None) or "America/Chicago").strip() or "America/Chicago"
+    from accounts.timezone_utils import DEFAULT_ACCOUNT_TIMEZONE
+
+    tz_name = (getattr(credentials, "timezone", None) or DEFAULT_ACCOUNT_TIMEZONE).strip() or DEFAULT_ACCOUNT_TIMEZONE
     try:
         issue_date = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
     except Exception:
-        issue_date = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+        issue_date = datetime.now(ZoneInfo(DEFAULT_ACCOUNT_TIMEZONE)).strftime("%Y-%m-%d")
 
     payload = {
         "altId": credentials.location_id,

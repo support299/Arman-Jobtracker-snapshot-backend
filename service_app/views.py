@@ -98,6 +98,11 @@ class AdminTokenObtainPairView(TokenObtainPairView):
         
         if employee_profile:
             response_data['employee_profile'] = employee_profile
+
+        from service_app.auth_account import serialize_user_ghl_account
+        ghl_account = serialize_user_ghl_account(user)
+        if ghl_account:
+            response_data['account'] = ghl_account
         
         return Response(response_data, status=status.HTTP_200_OK)
 
@@ -147,6 +152,11 @@ class UserTokenObtainPairView(TokenObtainPairView):
         
         if employee_profile:
             response_data['employee_profile'] = employee_profile
+
+        from service_app.auth_account import serialize_user_ghl_account
+        ghl_account = serialize_user_ghl_account(user)
+        if ghl_account:
+            response_data['account'] = ghl_account
         
         return Response(response_data, status=status.HTTP_200_OK)
 

@@ -16,6 +16,7 @@ from django.contrib.auth import get_user_model
 
 from accounts.permissions import AccountScopedPermission
 from accounts.mixins import AccountScopedQuerysetMixin
+from accounts.timezone_utils import get_pytz_for_request
 from jobtracker_app.models import Job
 from jobtracker_app.views import resolve_user_identifier
 from accounts.models import Contact
@@ -229,7 +230,7 @@ class InvoiceViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         """
         queryset = self.filter_queryset(self.get_queryset())
 
-        central_tz = pytz.timezone("America/Chicago")
+        central_tz = get_pytz_for_request(request)
 
         # === Query Params ===
         start_date = request.query_params.get("start_date")

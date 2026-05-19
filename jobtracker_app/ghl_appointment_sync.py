@@ -115,11 +115,10 @@ def compute_job_appointment_utc_window(job) -> Optional[Tuple[Any, Any, GHLAuthC
     except GHLAuthCredentials.MultipleObjectsReturned:
         credentials = GHLAuthCredentials.objects.filter(location_id=location_id).first()
 
-    try:
-        timezone_str = credentials.timezone if credentials.timezone else 'America/Chicago'
-        tz = pytz.timezone(timezone_str)
-    except Exception:
-        tz = pytz.timezone('America/Chicago')
+    from accounts.timezone_utils import get_pytz_timezone
+
+    timezone_str = credentials.timezone if credentials.timezone else 'America/Chicago'
+    tz = get_pytz_timezone(timezone_str)
 
     try:
         job_start_time = job.scheduled_at

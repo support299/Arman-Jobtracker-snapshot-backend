@@ -384,6 +384,7 @@ class JobSerializer(serializers.ModelSerializer):
     series_sequence = serializers.IntegerField(read_only=True)
     quoted_by_name = serializers.SerializerMethodField()
     slot_reserved_info = serializers.SerializerMethodField()
+    account_timezone = serializers.SerializerMethodField()
     images = JobImageSerializer(many=True, read_only=True)
     contact_details = serializers.SerializerMethodField()
     address_details = serializers.SerializerMethodField()
@@ -413,9 +414,11 @@ class JobSerializer(serializers.ModelSerializer):
             'job_type', 'repeat_every', 'repeat_unit', 'occurrences', 'day_of_week',
             'status', 'notes', 'payment_method', 'items', 'assignments',
             'occurrence_count', 'occurrence_events', 'series_id', 'series_sequence',
-            'invoice_url', 'slot_reserved_info', 'images', 'created_at', 'updated_at'
+            'invoice_url', 'slot_reserved_info', 'account_timezone', 'images', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'contact', 'address', 'revised_total', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'contact', 'address', 'revised_total', 'account_timezone', 'created_at', 'updated_at',
+        ]
 
     def get_contact_details(self, obj):
         """Return contact details if contact is linked"""
@@ -452,6 +455,17 @@ class JobSerializer(serializers.ModelSerializer):
             full_name = obj.quoted_by.get_full_name()
             return full_name if full_name else obj.quoted_by.username
         return None
+
+    def get_account_timezone(self, obj):
+        """GHL location timezone for this job (not employee payroll timezone)."""
+        from accounts.timezone_utils import DEFAULT_ACCOUNT_TIMEZONE
+
+        acc = getattr(obj, 'account', None)
+        if acc is not None and getattr(acc, 'timezone', None):
+            tz = (acc.timezone or '').strip()
+            if tz:
+                return tz
+        return DEFAULT_ACCOUNT_TIMEZONE
 
     def get_slot_reserved_info(self, obj):
         """

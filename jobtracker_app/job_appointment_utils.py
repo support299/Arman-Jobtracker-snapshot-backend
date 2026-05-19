@@ -37,11 +37,10 @@ def _get_job_slot_utc_and_location(job):
     if not location_id or not credentials:
         return None
 
-    try:
-        timezone_str = credentials.timezone if credentials.timezone else "America/Chicago"
-        tz = pytz.timezone(timezone_str)
-    except Exception:
-        tz = pytz.timezone("America/Chicago")
+    from accounts.timezone_utils import get_pytz_timezone
+
+    timezone_str = credentials.timezone if credentials.timezone else "America/Chicago"
+    tz = get_pytz_timezone(timezone_str)
 
     try:
         job_start_time = job.scheduled_at
