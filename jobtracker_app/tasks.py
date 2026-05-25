@@ -416,7 +416,12 @@ def send_job_completion_webhook(job_id):
                 invoice_url = invoice_ref["invoice_url"] or None
 
                 if ghl_invoice_id:
-                    save_job_invoice_info(job_id, ghl_invoice_id, invoice_url=invoice_url)
+                    save_job_invoice_info(
+                        job_id,
+                        ghl_invoice_id,
+                        invoice_sent=True,
+                        invoice_url=invoice_url,
+                    )
                     print(
                         f"✅ Invoice saved to job {job_id}: "
                         f"ghl_invoice_id={ghl_invoice_id}, invoice_url={invoice_url}"

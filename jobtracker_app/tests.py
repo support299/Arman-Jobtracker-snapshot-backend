@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 from accounts.models import GHLAuthCredentials
 from service_app.models import User
 from .tasks import _extract_invoice_reference_data
+from .helpers import save_job_invoice_info
 from .models import Job, JobAssignment, JobServiceItem
 
 
@@ -69,6 +70,54 @@ class InvoiceReferenceExtractionTests(SimpleTestCase):
             ref["invoice_url"],
             "https://workorder.theservicepilot.com/invoice/46779fb8-21b7-46db-bb4a-133596c6a1df/",
         )
+
+
+class JobInvoiceStatusTests(TestCase):
+    def setUp(self):
+        self.account = GHLAuthCredentials.objects.create(
+            user_id="test-account",
+            access_token="access-token",
+            refresh_token="refresh-token",
+            expires_in=3600,
+            location_id="test-location",
+        )
+        self.job = Job.objects.create(
+            account=self.account,
+            title="Invoice job",
+            total_price=Decimal("100.00"),
+            status="completed",
+        )
+
+    def test_save_job_invoice_info_marks_sent_when_invoice_sent_true(self):
+        save_job_invoice_info(
+            str(self.job.id),
+            "ghl-invoice-1",
+            invoice_sent=True,
+            invoice_url="https://workorder.theservicepilot.com/invoice/public-1/",
+        )
+
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.invoice_id, "ghl-invoice-1")
+        self.assertEqual(self.job.invoice_status, "sent")
+        self.assertEqual(
+            self.job.invoice_url,
+            "https://workorder.theservicepilot.com/invoice/public-1/",
+        )
+
+    def test_save_job_invoice_info_does_not_downgrade_existing_status(self):
+        self.job.invoice_id = "ghl-invoice-1"
+        self.job.invoice_status = "sent"
+        self.job.save(update_fields=["invoice_id", "invoice_status"])
+
+        save_job_invoice_info(
+            str(self.job.id),
+            "ghl-invoice-1",
+            invoice_sent=False,
+            invoice_url="https://workorder.theservicepilot.com/invoice/public-1/",
+        )
+
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.invoice_status, "sent")
 
 
 class JobConvertToSeriesTests(APITestCase):

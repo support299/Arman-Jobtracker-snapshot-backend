@@ -695,7 +695,13 @@ def save_job_invoice_info(job_id, invoice_id, *, invoice_sent=False, invoice_url
     """Store GHL invoice id, URL, and initial status on a job after invoice creation."""
     if not job_id or not invoice_id:
         return
+    current_status = (
+        Job.objects.filter(id=job_id).values_list("invoice_status", flat=True).first() or ""
+    ).strip()
     status = INVOICE_STATUS_SENT if invoice_sent else INVOICE_STATUS_DRAFT
+    # Never downgrade a job invoice back to draft if a later webhook already marked it sent/paid/etc.
+    if current_status and current_status != INVOICE_STATUS_DRAFT and not invoice_sent:
+        status = current_status
     if not invoice_url:
         invoice_url = f"https://workorder.theservicepilot.com/invoice/{invoice_id}/"
     Job.objects.filter(id=job_id).update(
