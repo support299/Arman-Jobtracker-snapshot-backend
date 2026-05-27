@@ -12,7 +12,11 @@ from datetime import datetime, timedelta
 from accounts.permissions import AccountScopedPermission
 from accounts.mixins import AccountScopedQuerysetMixin
 from service_app.models import User
-from .access import payroll_can_view_team_data, payroll_has_admin_access
+from .access import (
+    payroll_can_view_employees,
+    payroll_can_view_team_data,
+    payroll_has_admin_access,
+)
 from .models import (
     EmployeeProfile,
     CollaborationRate,
@@ -47,6 +51,11 @@ def _payroll_can_view_team_data(user):
 def _payroll_is_admin(user):
     """Payroll-only admin access. Managers remain self-only in payroll."""
     return payroll_has_admin_access(user)
+
+
+def _employees_can_view_team(user):
+    """Managers can list/read all employee profiles (view-only)."""
+    return payroll_can_view_employees(user)
 
 
 def _time_off_can_view_team(user):
@@ -124,7 +133,13 @@ class IsManagerReadOnlyInTimeOffPermission(permissions.BasePermission):
 
 
 class EmployeeProfileViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
-    """ViewSet for managing employee profiles (scoped to current account)."""
+    """
+    ViewSet for managing employee profiles (scoped to current account).
+
+    - Worker: read only their own profile.
+    - Manager: view-only; list/retrieve all employees in account (filters apply).
+    - Payroll admin (supervisor): full CRUD on all employees in account.
+    """
     queryset = EmployeeProfile.objects.all().select_related('user').prefetch_related('user__collaboration_rates')
     serializer_class = EmployeeProfileSerializer
     permission_classes = [AccountScopedPermission, IsAdminOrEmployeePermission]
@@ -141,14 +156,13 @@ class EmployeeProfileViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         queryset = super().get_queryset()
         user = self.request.user
         
-        # Normal users can only see their own profile (within account scope)
-        if not _payroll_is_admin(user):
+        # Workers: own profile only. Managers/supervisors: full account directory.
+        if not _employees_can_view_team(user):
             queryset = queryset.filter(user=user)
         else:
-            # Exclude super admin (superuser) from employee list for admins
             queryset = queryset.exclude(user__is_superuser=True)
         
-        # Search functionality (admin only)
+        # Search (available when user can see multiple profiles)
         search = self.request.query_params.get('search', None)
         if search:
             queryset = queryset.filter(
@@ -188,11 +202,9 @@ class EmployeeProfileViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         obj = super().get_object()
         user = self.request.user
         
-        # Admins can access any profile
-        if _payroll_is_admin(user):
+        if _employees_can_view_team(user):
             return obj
         
-        # Normal users can only access their own profile
         if obj.user != user:
             raise PermissionDenied("You do not have permission to access this employee profile.")
         

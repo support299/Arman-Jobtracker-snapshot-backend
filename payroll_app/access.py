@@ -20,3 +20,21 @@ def payroll_can_view_team_data(user):
     if not payroll_has_admin_access(user):
         return False
     return getattr(user, "payroll_can_view_team_data", True)
+
+
+def payroll_can_view_employees(user):
+    """
+    Whether the user can list/read all employee profiles in payroll.
+
+    Managers are view-only elsewhere in payroll but may browse the full
+    employee directory (with query filters). Supervisors/superusers use
+    payroll admin rules.
+    """
+    if not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    role = getattr(user, "role", None)
+    if role == User.ROLE_MANAGER:
+        return True
+    return payroll_has_admin_access(user)

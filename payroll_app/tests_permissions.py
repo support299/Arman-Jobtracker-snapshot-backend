@@ -93,14 +93,24 @@ class PayrollRolePermissionTests(APITestCase):
             return data['results']
         return data
 
-    def test_manager_employee_list_is_self_only_in_payroll(self):
+    def test_manager_employee_list_includes_all_employees_with_filters(self):
         self._authenticate(self.manager)
 
-        response = self.client.get('/api/payroll/employees/')
+        all_response = self.client.get('/api/payroll/employees/')
+        filtered_response = self.client.get(
+            '/api/payroll/employees/?pay_scale_type=project'
+        )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        results = self._extract_results(response.data)
-        self.assertEqual([row['user_id'] for row in results], [self.manager.id])
+        self.assertEqual(all_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(filtered_response.status_code, status.HTTP_200_OK)
+        all_results = self._extract_results(all_response.data)
+        filtered_results = self._extract_results(filtered_response.data)
+        all_user_ids = {row['user_id'] for row in all_results}
+        filtered_user_ids = {row['user_id'] for row in filtered_results}
+        self.assertEqual(all_user_ids, {self.manager.id, self.worker.id})
+        self.assertEqual(filtered_user_ids, {self.manager.id, self.worker.id})
+        for row in filtered_results:
+            self.assertEqual(row['pay_scale_type'], 'project')
 
     def test_manager_payouts_are_self_only_in_payroll(self):
         self._authenticate(self.manager)
