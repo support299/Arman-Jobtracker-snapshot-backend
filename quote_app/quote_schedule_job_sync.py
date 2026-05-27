@@ -10,7 +10,10 @@ from django.db import transaction
 
 from service_app.models import User
 
-from quote_app.helpers import get_global_minimum_base_price_for_submission
+from quote_app.helpers import (
+    get_global_minimum_base_price_for_submission,
+    update_ghl_quote_value_for_submission,
+)
 from .models import CustomService, CustomerServiceSelection, CustomerPackageQuote
 
 
@@ -262,5 +265,10 @@ def sync_job_when_quote_schedule_submitted(submission, quote_schedule):
         if submission.status != "accepted":
             submission.status = "accepted"
             submission.save(update_fields=["status"])
+
+    try:
+        update_ghl_quote_value_for_submission(submission)
+    except Exception as exc:
+        print(f'⚠️ [QUOTE VALUE] Failed to sync on quote schedule submit: {exc}')
 
     return job
