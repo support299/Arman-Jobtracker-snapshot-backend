@@ -8,6 +8,7 @@ from .models import (
     Calendar,
     GHLCompanyAuth,
     Location,
+    GHLCustomField,
 )
 
 
@@ -96,3 +97,4 @@ admin.site.register(GHLCompanyAuth)
 admin.site.register(Address)
 admin.site.register(Contact)
 admin.site.register(Calendar)
+admin.site.register(GHLCustomField)

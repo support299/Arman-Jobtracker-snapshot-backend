@@ -72,6 +72,95 @@ def resolve_location_id_for_submission(submission, credentials):
     return None
 
 
+def _is_valid_ghl_custom_field_id(ghl_field_id):
+    return bool(
+        ghl_field_id
+        and ghl_field_id != 'ghl_field_id'
+        and len(str(ghl_field_id)) >= 5
+    )
+
+
+def format_quote_value_for_ghl(submission):
+    """Format submission.final_total for the GHL 'Quote Value' text custom field."""
+    total = getattr(submission, 'final_total', None)
+    if total is None:
+        return None
+    return f"{Decimal(total):.2f}"
+
+
+def append_ghl_custom_field(custom_fields, credentials, field_name, field_value, log_prefix='GHL'):
+    """Append a mapped GHL custom field entry to custom_fields if configured for this account."""
+    if field_value is None:
+        return
+    try:
+        ghl_field = GHLCustomField.objects.get(
+            account=credentials,
+            field_name=field_name,
+            is_active=True,
+        )
+        ghl_field.refresh_from_db()
+        if _is_valid_ghl_custom_field_id(ghl_field.ghl_field_id):
+            custom_fields.append({
+                'id': str(ghl_field.ghl_field_id),
+                'field_value': str(field_value),
+            })
+            print(f"✅ [{log_prefix}] Using custom field '{field_name}' with value: {field_value}")
+        else:
+            print(
+                f"⚠️ [{log_prefix}] Invalid ghl_field_id for '{field_name}': "
+                f"'{ghl_field.ghl_field_id}'. Skipping."
+            )
+    except GHLCustomField.DoesNotExist:
+        print(f"⚠️ [{log_prefix}] '{field_name}' custom field not found for this account.")
+    except Exception as e:
+        print(f"❌ [{log_prefix}] Error getting '{field_name}' field: {e}")
+
+
+def update_ghl_quote_value_for_submission(submission):
+    """
+    Push submission.final_total to the GHL contact 'Quote Value' custom field.
+    Used when a quote is accepted via booking (QuoteSchedule submitted).
+    """
+    quote_value = format_quote_value_for_ghl(submission)
+    if quote_value is None:
+        return
+
+    credentials = resolve_ghl_credentials_for_submission(submission)
+    if not credentials:
+        print('❌ [QUOTE VALUE] No GHLAuthCredentials for submission.')
+        return
+
+    contact = getattr(submission, 'contact', None)
+    ghl_contact_id = (getattr(contact, 'contact_id', None) or '').strip() if contact else ''
+    if not ghl_contact_id:
+        print('❌ [QUOTE VALUE] No GHL contact_id on submission contact.')
+        return
+
+    custom_fields = []
+    append_ghl_custom_field(
+        custom_fields,
+        credentials,
+        'Quote Value',
+        quote_value,
+        log_prefix='QUOTE VALUE',
+    )
+    if not custom_fields:
+        return
+
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {credentials.access_token}',
+        'Version': '2021-07-28',
+        'Content-Type': 'application/json',
+    }
+    response = requests.put(
+        f'https://services.leadconnectorhq.com/contacts/{ghl_contact_id}',
+        json={'customFields': custom_fields},
+        headers=headers,
+    )
+    print(f'⬅️ [QUOTE VALUE] GHL response [{response.status_code}]: {response.text}')
+
+
 def create_or_update_ghl_contact(submission, is_submit=False):
     try:
         print("🔹 Starting GHL contact sync...")
@@ -169,6 +258,17 @@ def create_or_update_ghl_contact(submission, is_submit=False):
             print(f"⚠️ [QUOTE LINK] 'Quote Link' custom field not found for location_id: {location_id}")
         except Exception as e:
             print(f"❌ [QUOTE LINK] Error getting Quote Link field: {str(e)}")
+
+        if is_submit:
+            quote_value = format_quote_value_for_ghl(submission)
+            if quote_value is not None:
+                append_ghl_custom_field(
+                    custom_fields,
+                    credentials,
+                    'Quote Value',
+                    quote_value,
+                    log_prefix='QUOTE VALUE',
+                )
         
         print(f"🛠 Custom fields prepared: {custom_fields}")
 

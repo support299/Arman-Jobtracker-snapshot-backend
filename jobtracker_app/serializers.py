@@ -62,7 +62,8 @@ class CalendarEventSerializer(serializers.ModelSerializer):
         fields = [
             'job_id', 'title', 'scheduled_at', 'status', 'priority',
             'duration_hours', 'total_price', 'total_surcharge', 'customer_name', 'company_name',
-            'series_id', 'series_sequence', 'job_type', 'assigned_user_ids', 'job_address'
+            'series_id', 'series_sequence', 'job_type', 'assigned_user_ids', 'job_address',
+            'invoice_status'
         ]
 
     def get_job_address(self, obj):
