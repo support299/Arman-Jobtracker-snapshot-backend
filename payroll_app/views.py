@@ -16,6 +16,7 @@ from .access import (
     payroll_can_view_employees,
     payroll_can_view_team_data,
     payroll_has_admin_access,
+    payroll_can_manage_time_off,
 )
 from .models import (
     EmployeeProfile,
@@ -59,8 +60,8 @@ def _employees_can_view_team(user):
 
 
 def _time_off_can_view_team(user):
-    """Managers can read team time-off data, but not write it."""
-    return _payroll_is_admin(user) or getattr(user, 'role', None) == User.ROLE_MANAGER
+    """Managers and supervisors can read team time-off data."""
+    return payroll_can_manage_time_off(user)
 
 
 def _resolve_calculator_user_id(identifier, account):
@@ -114,22 +115,6 @@ class IsPayrollAdminPermission(permissions.BasePermission):
             request.user.is_authenticated and 
             _payroll_is_admin(request.user)
         )
-
-
-class IsManagerReadOnlyInTimeOffPermission(permissions.BasePermission):
-    """Managers can only view time-off records in payroll."""
-
-    message = 'Managers have view-only access to time off.'
-
-    def has_permission(self, request, view):
-        if request.method in permissions.SAFE_METHODS:
-            return True
-        user = getattr(request, 'user', None)
-        if not user or not user.is_authenticated:
-            return False
-        if getattr(user, 'is_superuser', False):
-            return True
-        return getattr(user, 'role', None) != User.ROLE_MANAGER
 
 
 class EmployeeProfileViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
@@ -567,8 +552,8 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     ``full_day``, ``half_day_am``, ``half_day_pm``, ``custom`` (requires times).
 
     - Worker: create/list/retrieve/update/delete only their own entries.
-    - Manager: view only, but can read the whole team's entries.
-    - Payroll admin: all employees in account; optional ?employee=<user_id>.
+    - Manager / supervisor: full team time off (create, edit, delete for any employee).
+    - Optional ?employee=<user_id> filter on list.
     - Optional calendar window: ?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD returns
       entries that overlap that range.
     """
@@ -576,15 +561,6 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     serializer_class = EmployeeTimeOffSerializer
     permission_classes = [AccountScopedPermission, IsAdminOrEmployeePermission]
     account_lookup = 'employee__account'
-
-    def get_permissions(self):
-        if self.request.method not in permissions.SAFE_METHODS:
-            return [
-                AccountScopedPermission(),
-                IsAdminOrEmployeePermission(),
-                IsManagerReadOnlyInTimeOffPermission(),
-            ]
-        return super().get_permissions()
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -623,7 +599,7 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        if not _payroll_is_admin(user):
+        if not payroll_can_manage_time_off(user):
             serializer.save(employee=user)
         else:
             serializer.save()

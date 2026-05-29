@@ -389,6 +389,7 @@ class JobSerializer(serializers.ModelSerializer):
     images = JobImageSerializer(many=True, read_only=True)
     contact_details = serializers.SerializerMethodField()
     address_details = serializers.SerializerMethodField()
+    persisted_snapshot_id = serializers.SerializerMethodField()
 
     # Write-only fields for linking to Contact and Address models
     contact_id = serializers.IntegerField(
@@ -415,7 +416,8 @@ class JobSerializer(serializers.ModelSerializer):
             'job_type', 'repeat_every', 'repeat_unit', 'occurrences', 'day_of_week',
             'status', 'notes', 'payment_method', 'items', 'assignments',
             'occurrence_count', 'occurrence_events', 'series_id', 'series_sequence',
-            'invoice_id', 'invoice_status', 'invoice_url', 'slot_reserved_info', 'account_timezone', 'images', 'created_at', 'updated_at'
+            'invoice_id', 'invoice_status', 'invoice_url', 'slot_reserved_info', 'account_timezone', 'images', 'created_at', 'updated_at',
+            'persisted_snapshot_id',
         ]
         read_only_fields = [
             'id', 'contact', 'address', 'revised_total', 'account_timezone',
@@ -480,6 +482,19 @@ class JobSerializer(serializers.ModelSerializer):
             return None
         from .job_appointment_utils import get_slot_reserved_info_for_job
         return get_slot_reserved_info_for_job(obj)
+
+    def get_persisted_snapshot_id(self, obj):
+        """Original proposal snapshot ID when the linked submission has one saved."""
+        if not self.context.get('include_slot_reserved_info'):
+            return None
+        submission = getattr(obj, 'submission', None)
+        if not submission:
+            return None
+        from quote_app.models import CustomerSubmission
+        try:
+            return str(submission.persisted_snapshot.pk)
+        except CustomerSubmission.DoesNotExist:
+            return None
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])

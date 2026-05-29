@@ -13,8 +13,14 @@ from datetime import timedelta
 from django.utils import timezone
 from accounts.permissions import AccountScopedPermission
 from accounts.mixins import AccountScopedQuerysetMixin
+
+
+def assert_not_persisted_snapshot(submission):
+    if submission.is_persisted_snapshot:
+        raise ValidationError('This quote is a read-only saved copy and cannot be modified.')
 from .account_scope_utils import get_submission_for_account, get_job_for_account
 from .reschedule_utils import clone_submission_for_reschedule
+from .persist_snapshot_utils import clone_submission_as_persisted_snapshot
 from service_app.account_scope_utils import get_service_for_account
 from service_app.models import ServiceSettings
 from service_app.models import (
@@ -970,6 +976,45 @@ class SubmissionDetailView(generics.RetrieveUpdateAPIView):
             self.request.account = account
         return submission
 
+    def perform_update(self, serializer):
+        assert_not_persisted_snapshot(serializer.instance)
+        serializer.save()
+
+# Persist immutable snapshot of the original proposal
+class PersistQuoteSnapshotView(APIView):
+    """
+    POST /api/quote/<submission_id>/persist-snapshot/
+    Deep-clone the working submission as a read-only original proposal copy.
+    """
+    permission_classes = [AccountScopedPermission, AllowAny]
+
+    def post(self, request, submission_id):
+        account = getattr(request, 'account', None)
+        submission = get_submission_for_account(submission_id, account)
+
+        if submission.is_persisted_snapshot:
+            return Response(
+                {'error': 'Cannot create a snapshot from a snapshot.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            snapshot, created = clone_submission_as_persisted_snapshot(submission)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CustomerSubmissionDetailSerializer(snapshot, context={'request': request})
+        return Response(
+            {
+                'message': 'Original proposal saved successfully.',
+                'snapshot_id': str(snapshot.id),
+                'source_submission_id': str(submission.id),
+                'created': created,
+                'snapshot': serializer.data,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
 # Update additional_data for submission
 class UpdateSubmissionAdditionalDataView(APIView):
     """
@@ -982,6 +1027,7 @@ class UpdateSubmissionAdditionalDataView(APIView):
     def patch(self, request, submission_id):
         account = getattr(request, 'account', None)
         submission = get_submission_for_account(submission_id, account)
+        assert_not_persisted_snapshot(submission)
         # Get additional_data from request
         additional_data = request.data.get('additional_data')
         if additional_data is None:

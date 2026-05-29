@@ -42,19 +42,23 @@ class PayrollRolePermissionTests(APITestCase):
             account=self.account,
         )
 
-        self.manager_profile = EmployeeProfile.objects.create(
-            account=self.account,
+        self.manager_profile, _ = EmployeeProfile.objects.update_or_create(
             user=self.manager,
-            department='Sales',
-            position='Manager',
-            pay_scale_type='project',
+            defaults={
+                'account': self.account,
+                'department': 'Sales',
+                'position': 'Manager',
+                'pay_scale_type': 'project',
+            },
         )
-        EmployeeProfile.objects.create(
-            account=self.account,
+        EmployeeProfile.objects.update_or_create(
             user=self.worker,
-            department='Ops',
-            position='Worker',
-            pay_scale_type='project',
+            defaults={
+                'account': self.account,
+                'department': 'Ops',
+                'position': 'Worker',
+                'pay_scale_type': 'project',
+            },
         )
 
         self.manager_payout = Payout.objects.create(
@@ -129,12 +133,13 @@ class PayrollRolePermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_manager_time_off_is_view_only(self):
+    def test_manager_can_manage_team_time_off(self):
         self._authenticate(self.manager)
 
         create_response = self.client.post(
             '/api/payroll/time-off/',
             {
+                'employee': self.worker.id,
                 'start_date': '2026-06-02',
                 'end_date': '2026-06-02',
                 'kind': 'personal',
@@ -143,17 +148,15 @@ class PayrollRolePermissionTests(APITestCase):
             format='json',
         )
         update_response = self.client.patch(
-            f'/api/payroll/time-off/{self.manager_time_off.id}/',
-            {'notes': 'updated'},
+            f'/api/payroll/time-off/{self.worker_time_off.id}/',
+            {'notes': 'updated by manager'},
             format='json',
         )
-        delete_response = self.client.delete(
-            f'/api/payroll/time-off/{self.manager_time_off.id}/'
-        )
 
-        self.assertEqual(create_response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(update_response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(delete_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data['employee'], self.worker.id)
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(update_response.data['notes'], 'updated by manager')
 
     def test_manager_can_view_team_time_off(self):
         self._authenticate(self.manager)

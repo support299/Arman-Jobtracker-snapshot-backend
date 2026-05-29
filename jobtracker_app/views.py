@@ -275,7 +275,9 @@ class JobViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         instance = self.get_object()
         
         # Optimize queryset with prefetch for assignments and related data
-        instance = Job.objects.prefetch_related(
+        instance = Job.objects.select_related(
+            'submission__persisted_snapshot',
+        ).prefetch_related(
             'assignments__user',
             'appointment',
             'images',
@@ -537,7 +539,9 @@ class PublicJobViewSet(AccountScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-        instance = Job.objects.prefetch_related(
+        instance = Job.objects.select_related(
+            'submission__persisted_snapshot',
+        ).prefetch_related(
             'assignments__user',
             'appointment',
             'images',

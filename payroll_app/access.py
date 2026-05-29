@@ -38,3 +38,13 @@ def payroll_can_view_employees(user):
     if role == User.ROLE_MANAGER:
         return True
     return payroll_has_admin_access(user)
+
+
+def payroll_can_manage_time_off(user):
+    """Whether the user can create, update, or delete time off for any employee."""
+    if not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    role = getattr(user, "role", None)
+    return role in (User.ROLE_MANAGER, User.ROLE_SUPERVISOR)

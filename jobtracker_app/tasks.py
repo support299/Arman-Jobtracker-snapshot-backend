@@ -276,7 +276,7 @@ def send_job_completion_webhook(job_id):
         print("🔍 Fetching job with related submission, contact, items, and services")
 
         job = (
-            Job.objects.select_related("submission__contact", "submission__location")
+            Job.objects.select_related("submission__contact", "submission__location", "contact")
             .prefetch_related("items__service")
             .filter(id=job_id)
             .first()
@@ -351,6 +351,20 @@ def send_job_completion_webhook(job_id):
             print(f"   ➕ Added trip surcharge line: {trip_line}")
 
         # --------------------------------------------------
+        # Resolve GHL contact id
+        # --------------------------------------------------
+        ghl_contact_id = (job.ghl_contact_id or "").strip()
+        if not ghl_contact_id and job.contact:
+            ghl_contact_id = (job.contact.contact_id or "").strip()
+        if not ghl_contact_id and job.submission and job.submission.contact:
+            ghl_contact_id = (job.submission.contact.contact_id or "").strip()
+
+        if ghl_contact_id:
+            print(f"👤 GHL contact ID resolved: {ghl_contact_id}")
+        else:
+            print("⚠️ No GHL contact ID found on job, linked contact, or submission")
+
+        # --------------------------------------------------
         # Build webhook payload
         # --------------------------------------------------
         payload = {
@@ -359,6 +373,9 @@ def send_job_completion_webhook(job_id):
             "location_id": location_id,
             "job_id": job_id
         }
+
+        if ghl_contact_id:
+            payload["ghl_contact_id"] = ghl_contact_id
 
         if getattr(job, 'discount_type', None) and (float(job.discount_value or 0) > 0):
             payload["discount"] = {

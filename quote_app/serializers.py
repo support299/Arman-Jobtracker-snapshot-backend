@@ -309,6 +309,8 @@ class CustomerSubmissionDetailSerializer(serializers.ModelSerializer):
     quote_schedule = QuoteScheduleSerializer(read_only=True)
     quoted_by_details = serializers.SerializerMethodField()
     images = CustomerSubmissionImageSerializer(many=True, read_only=True)
+    source_submission_id = serializers.SerializerMethodField()
+    persisted_snapshot_id = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomerSubmission
@@ -318,7 +320,8 @@ class CustomerSubmissionDetailSerializer(serializers.ModelSerializer):
             'status', 'total_base_price', 'total_adjustments',
             'total_surcharges', 'final_total', 'created_at','quote_surcharge_applicable',
             'expires_at', 'service_selections','additional_data','contact','address','custom_products','custom_service_total','quote_schedule',
-            'quoted_by', 'quoted_by_details', 'images'
+            'quoted_by', 'quoted_by_details', 'images',
+            'is_persisted_snapshot', 'source_submission_id', 'persisted_snapshot_id',
         ]
     
     def get_service_selections(self, obj):
@@ -341,6 +344,16 @@ class CustomerSubmissionDetailSerializer(serializers.ModelSerializer):
                 'full_name': obj.quoted_by.get_full_name() or obj.quoted_by.username,
             }
         return None
+
+    def get_source_submission_id(self, obj):
+        return str(obj.source_submission_id) if obj.source_submission_id else None
+
+    def get_persisted_snapshot_id(self, obj):
+        try:
+            snapshot = obj.persisted_snapshot
+        except CustomerSubmission.DoesNotExist:
+            return None
+        return str(snapshot.id) if snapshot else None
     
     def get_fields(self):
         fields = super().get_fields()
@@ -367,11 +380,8 @@ class CustomerServiceSelectionDetailSerializer(serializers.ModelSerializer):
         ]
     
     def get_package_quotes(self, obj):
-        # Only return selected quote if packages are selected, otherwise all quotes
-        if obj.selected_package:
-            quotes = obj.package_quotes.filter(is_selected=True)
-        else:
-            quotes = obj.package_quotes.all().order_by('package__order')
+        # Always return all package options; is_selected marks the customer's choice.
+        quotes = obj.package_quotes.all().order_by('-is_selected', 'package__order')
         return CustomerPackageQuoteSerializer(quotes, many=True).data
     
     

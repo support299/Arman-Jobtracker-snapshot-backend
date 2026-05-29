@@ -57,6 +57,9 @@ urlpatterns = [
     
     # Reject quote
     path('<uuid:submission_id>/reject/', views.RejectQuoteView.as_view(), name='reject-quote'),
+
+    # Save immutable original proposal snapshot
+    path('<uuid:submission_id>/persist-snapshot/', views.PersistQuoteSnapshotView.as_view(), name='persist-quote-snapshot'),
     
     # ============================================================================
     # UTILITY ENDPOINTS

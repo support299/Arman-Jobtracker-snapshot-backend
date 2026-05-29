@@ -57,6 +57,22 @@ class CustomerSubmission(models.Model):
     
     # User who created/quoted this submission
     quoted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='quoted_submissions')
+
+    # Persisted snapshot of the original proposal (technician save before client edits)
+    is_persisted_snapshot = models.BooleanField(
+        default=False,
+        help_text='When True, this submission is an immutable copy of the original proposal.',
+        null=True,
+        blank=True,
+    )
+    source_submission = models.OneToOneField(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='persisted_snapshot',
+        help_text='Working submission this snapshot was copied from.',
+    )
     
     # Pricing Summary (calculated after package selection)
     total_base_price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
