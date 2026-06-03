@@ -27,10 +27,10 @@ idna==3.10
 iniconfig==2.1.0
 kombu==5.5.4
 packaging==25.0
-Pillow==10.1.0
+Pillow==12.2.0
 pluggy==1.6.0
 prompt_toolkit==3.0.51
-psycopg2==2.9.10
+psycopg2-binary==2.9.10
 PyJWT==2.10.1
 pytest==7.4.3
 pytest-django==4.7.0
