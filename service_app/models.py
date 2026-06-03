@@ -54,7 +54,7 @@ class User(AbstractUser):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'auth_user'
+        pass
 
     def save(self, *args, **kwargs):
         # Auto-sync is_admin from role: Managers and Supervisors are admins; others are regular users
