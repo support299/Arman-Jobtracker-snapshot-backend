@@ -70,15 +70,22 @@ def _resolve_calculator_user_id(identifier, account):
     Accepts: integer primary key, UUID (matched to ghl_user_id), email, or username.
     Returns (User, None) if found, (None, error_message) if invalid or not found.
     """
+    from accounts.user_access import users_queryset_for_account
+
     if identifier is None:
         return None, None
+    if account is None:
+        return None, "Account context is required"
     s = str(identifier).strip()
     if not s:
         return None, "User ID cannot be empty"
+
+    visible_users = users_queryset_for_account(account).exclude(is_superuser=True)
+
     # Try integer ID (User.pk is integer)
     try:
         uid = int(s)
-        user = User.objects.filter(pk=uid, account=account, is_superuser=False).first()
+        user = visible_users.filter(pk=uid).first()
         if user:
             return user, None
         return None, f"User with ID {uid} not found in this account"
@@ -86,16 +93,12 @@ def _resolve_calculator_user_id(identifier, account):
         pass
     # Try UUID / GHL-style id as ghl_user_id
     if len(s) == 36 and s.count("-") == 4 and all(c in "0123456789abcdefABCDEF-" for c in s):
-        user = User.objects.filter(ghl_user_id=s, account=account, is_superuser=False).first()
+        user = visible_users.filter(ghl_user_id=s).first()
         if user:
             return user, None
         return None, f"User with ID {s} not found in this account (tried ghl_user_id)"
     # Try email or username
-    user = User.objects.filter(
-        Q(email=s) | Q(username=s),
-        account=account,
-        is_superuser=False
-    ).first()
+    user = visible_users.filter(Q(email=s) | Q(username=s)).first()
     if user:
         return user, None
     return None, f"User '{s}' not found in this account"
@@ -138,7 +141,19 @@ class EmployeeProfileViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         return super().get_permissions()
     
     def get_queryset(self):
-        queryset = super().get_queryset()
+        from accounts.user_access import users_queryset_for_account
+
+        account = getattr(self.request, "account", None)
+        if account is None:
+            return EmployeeProfile.objects.none()
+
+        queryset = (
+            EmployeeProfile.objects.filter(
+                user__in=users_queryset_for_account(account)
+            )
+            .select_related("user")
+            .prefetch_related("user__collaboration_rates")
+        )
         user = self.request.user
         
         # Workers: own profile only. Managers/supervisors: full account directory.
@@ -235,10 +250,16 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     queryset = TimeEntry.objects.all().select_related('employee')
     serializer_class = TimeEntrySerializer
     permission_classes = [AccountScopedPermission, IsAdminOrEmployeePermission]
-    account_lookup = "employee__account"
+    account_lookup = "account"
     
     def get_queryset(self):
-        queryset = super().get_queryset()  # already filtered by employee__account
+        from accounts.user_access import time_entries_queryset_for_account
+
+        account = getattr(self.request, "account", None)
+        if account is None:
+            return TimeEntry.objects.none()
+
+        queryset = time_entries_queryset_for_account(account).select_related("employee")
         user = self.request.user
         # Non-admin: only their own entries within the account
         if not _payroll_is_admin(user):
@@ -296,19 +317,28 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
                     'error': 'employee_id is required for admin users'
                 }, status=status.HTTP_400_BAD_REQUEST)
             
-            try:
-                target_employee = User.objects.get(pk=employee_id, account=account, is_superuser=False)
-            except User.DoesNotExist:
+            from accounts.user_access import get_visible_user_by_id
+
+            target_employee = get_visible_user_by_id(account, employee_id)
+            if target_employee is None:
                 return Response({
                     'error': f'Employee with ID {employee_id} not found'
                 }, status=status.HTTP_404_NOT_FOUND)
         else:
             target_employee = user
         
-        # Check if employee has active session
-        active_entry = TimeEntry.objects.filter(
+        if account is None:
+            return Response(
+                {'error': 'Account context is required.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from accounts.user_access import time_entries_queryset_for_account
+
+        # Check if employee has active session in this subaccount only
+        active_entry = time_entries_queryset_for_account(account).filter(
             employee=target_employee,
-            status='checked_in'
+            status='checked_in',
         ).first()
         
         if active_entry:
@@ -316,8 +346,9 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
                 'error': f'{target_employee.get_full_name() or target_employee.username} already has an active session. Please check out first.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Create new time entry (employee is already account-scoped when admin)
+        # Create new time entry scoped to the current subaccount
         entry = TimeEntry.objects.create(
+            account=account,
             employee=target_employee,
             check_in_time=timezone.now(),
             notes=request.data.get('notes', '')
@@ -349,14 +380,23 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         can_view_team = _payroll_can_view_team_data(user)
         
         account = getattr(request, 'account', None)
+        from accounts.user_access import get_visible_user_by_id, time_entries_queryset_for_account
+
+        if account is None:
+            return Response(
+                {'error': 'Account context is required.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        scoped_entries = time_entries_queryset_for_account(account)
+
         if can_view_team:
             # Admin can query all active sessions or a specific employee's (within account)
             get_all = request.query_params.get('all', '').lower() == 'true'
             employee_id = request.query_params.get('employee_id')
             
             if get_all:
-                active_entries = TimeEntry.objects.filter(
-                    employee__account=account,
+                active_entries = scoped_entries.filter(
                     status='checked_in'
                 ).exclude(employee__is_superuser=True).select_related('employee').order_by('-check_in_time')
                 
@@ -379,20 +419,18 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
                     'count': len(result)
                 })
             elif employee_id:
-                try:
-                    target_employee = User.objects.get(pk=employee_id, account=account, is_superuser=False)
-                except User.DoesNotExist:
+                target_employee = get_visible_user_by_id(account, employee_id)
+                if target_employee is None:
                     return Response({
                         'error': f'Employee with ID {employee_id} not found'
                     }, status=status.HTTP_404_NOT_FOUND)
                 
-                active_entry = TimeEntry.objects.filter(
+                active_entry = scoped_entries.filter(
                     employee=target_employee,
-                    status='checked_in'
+                    status='checked_in',
                 ).first()
             else:
-                active_entries = TimeEntry.objects.filter(
-                    employee__account=account,
+                active_entries = scoped_entries.filter(
                     status='checked_in'
                 ).exclude(employee__is_superuser=True).select_related('employee').order_by('-check_in_time')
                 
@@ -415,11 +453,10 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
                     'count': len(result)
                 })
         else:
-            # Non-admin: only their own active session (strictly within account)
-            active_entry = TimeEntry.objects.filter(
+            # Non-admin: only their own active session in this subaccount
+            active_entry = scoped_entries.filter(
                 employee=user,
-                employee__account=account,
-                status='checked_in'
+                status='checked_in',
             ).first()
         
         if not active_entry:
@@ -441,7 +478,15 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     def check_out(self, request, pk=None):
         """Check out and complete time entry (entry is account-scoped via get_queryset when using detail route)."""
         account = getattr(request, 'account', None)
-        entry = get_object_or_404(TimeEntry, pk=pk, employee__account=account)
+        from accounts.user_access import time_entries_queryset_for_account
+
+        if account is None:
+            return Response(
+                {'error': 'Account context is required.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        entry = get_object_or_404(time_entries_queryset_for_account(account), pk=pk)
         
         # Verify ownership (unless admin)
         user = request.user
@@ -469,6 +514,7 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
             if profile.pay_scale_type == 'hourly' and profile.hourly_rate and entry.total_hours:
                 amount = (entry.total_hours * profile.hourly_rate).quantize(Decimal('0.01'))
                 Payout.objects.create(
+                    account=entry.account or account,
                     employee=entry.employee,
                     payout_type='hourly',
                     amount=amount,
@@ -503,33 +549,39 @@ class TimeEntryViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         user = request.user
         can_view_team = _payroll_can_view_team_data(user)
         account = getattr(request, 'account', None)
+        from accounts.user_access import get_visible_user_by_id, time_entries_queryset_for_account
+
+        if account is None:
+            return Response(
+                {'error': 'Account context is required.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        scoped_entries = time_entries_queryset_for_account(account)
         today = timezone.now().date()
         
         if can_view_team:
             employee_id = request.query_params.get('employee_id')
             get_all = request.query_params.get('all', 'true').lower() == 'true'
             
-            queryset = TimeEntry.objects.filter(
-                employee__account=account,
+            queryset = scoped_entries.filter(
                 check_in_time__date=today
             ).exclude(employee__is_superuser=True).filter(
                 Q(total_hours__isnull=True) | Q(total_hours__gte=MIN_DURATION_HOURS_FOR_TODAY)
             ).select_related('employee').order_by('-check_in_time')
             
             if employee_id:
-                try:
-                    target_employee = User.objects.get(pk=employee_id, account=account, is_superuser=False)
-                    queryset = queryset.filter(employee=target_employee)
-                except User.DoesNotExist:
+                target_employee = get_visible_user_by_id(account, employee_id)
+                if target_employee is None:
                     return Response({
                         'error': f'Employee with ID {employee_id} not found'
                     }, status=status.HTTP_404_NOT_FOUND)
+                queryset = queryset.filter(employee=target_employee)
             # If get_all is true (default), show all entries (no additional filter)
         else:
-            # Non-admin: only their own entries, strictly within current account
-            queryset = TimeEntry.objects.filter(
+            # Non-admin: only their own entries in this subaccount
+            queryset = scoped_entries.filter(
                 employee=user,
-                employee__account=account,
                 check_in_time__date=today
             ).filter(
                 Q(total_hours__isnull=True) | Q(total_hours__gte=MIN_DURATION_HOURS_FOR_TODAY)
@@ -563,7 +615,15 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     account_lookup = 'employee__account'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        from accounts.user_access import users_queryset_for_account
+
+        account = getattr(self.request, "account", None)
+        if account is None:
+            return EmployeeTimeOff.objects.none()
+
+        queryset = EmployeeTimeOff.objects.filter(
+            employee__in=users_queryset_for_account(account)
+        ).select_related("employee")
         user = self.request.user
         if not _time_off_can_view_team(user):
             queryset = queryset.filter(employee=user)
@@ -598,11 +658,21 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         return queryset.order_by('-start_date', '-created_at')
 
     def perform_create(self, serializer):
+        from accounts.user_access import users_queryset_for_account
+
         user = self.request.user
-        if not payroll_can_manage_time_off(user):
-            serializer.save(employee=user)
-        else:
+        account = getattr(self.request, "account", None)
+        if payroll_can_manage_time_off(user):
+            employee = serializer.validated_data.get("employee")
+            if employee and account:
+                visible = users_queryset_for_account(account)
+                if not visible.filter(pk=employee.pk).exists():
+                    raise PermissionDenied(
+                        "That employee is not in the current account."
+                    )
             serializer.save()
+        else:
+            serializer.save(employee=user)
 
     def get_object(self):
         obj = super().get_object()
@@ -720,7 +790,10 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        time_off_qs = EmployeeTimeOff.objects.filter(employee__account=account)
+        from accounts.user_access import users_queryset_for_account
+
+        visible_users = users_queryset_for_account(account)
+        time_off_qs = EmployeeTimeOff.objects.filter(employee__in=visible_users)
         off_employee_ids = employee_ids_off_in_window(
             time_off_qs,
             start_d,
@@ -730,7 +803,7 @@ class EmployeeTimeOffViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         )
 
         queryset = (
-            User.objects.filter(account=account, is_superuser=False)
+            visible_users.filter(is_superuser=False)
             .exclude(pk__in=list(off_employee_ids))
             .order_by('first_name', 'last_name', 'id')
         )
@@ -762,7 +835,7 @@ class PayoutViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     queryset = Payout.objects.all().select_related('employee', 'job', 'time_entry')
     serializer_class = PayoutSerializer
     permission_classes = [AccountScopedPermission, IsAdminOrEmployeePermission]
-    account_lookup = "employee__account"
+    account_lookup = "account"
     
     def get_permissions(self):
         if self.request.method in ['PUT', 'PATCH', 'DELETE']:
@@ -770,7 +843,15 @@ class PayoutViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
         return super().get_permissions()
     
     def get_queryset(self):
-        queryset = super().get_queryset()  # already filtered by employee__account
+        from accounts.user_access import payouts_queryset_for_account
+
+        account = getattr(self.request, "account", None)
+        if account is None:
+            return Payout.objects.none()
+
+        queryset = payouts_queryset_for_account(account).select_related(
+            'employee', 'job', 'time_entry'
+        )
         user = self.request.user
         # Limited scope: only their own payouts within the account
         if not _payroll_can_view_team_data(user):
@@ -814,11 +895,13 @@ class PayoutViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     
     def _get_employee_filter(self):
         """Helper: employees to include (account-scoped, excluding superusers)."""
+        from accounts.user_access import users_queryset_for_account
+
         user = self.request.user
         account = getattr(self.request, 'account', None)
         employee_id = self.request.query_params.get('employee', None)
         
-        base = User.objects.filter(account=account).exclude(is_superuser=True) if account else User.objects.none()
+        base = users_queryset_for_account(account).exclude(is_superuser=True) if account else User.objects.none()
         if not _payroll_can_view_team_data(user):
             return base.filter(pk=user.id)
         if employee_id:
@@ -827,11 +910,13 @@ class PayoutViewSet(AccountScopedQuerysetMixin, viewsets.ModelViewSet):
     
     def _get_time_entry_queryset(self):
         """Get filtered TimeEntry queryset matching the same filters as payouts"""
-        user = self.request.user
+        account = getattr(self.request, 'account', None)
+        from accounts.user_access import time_entries_queryset_for_account
+
         employee_filter = self._get_employee_filter()
         
         # Base queryset with employee filter
-        time_entries = TimeEntry.objects.filter(
+        time_entries = time_entries_queryset_for_account(account).filter(
             employee__in=employee_filter,
             status='checked_out'  # Only count completed time entries
         )
@@ -1067,6 +1152,7 @@ class CalculatorView(APIView):
             schedule_note = f" | Scheduled: {job_datetime_note}" if job_datetime_note else ''
             # Create project payout for this assignee
             payout = Payout.objects.create(
+                account=account,
                 employee=assignee,
                 payout_type='project',
                 amount=amount,
@@ -1098,6 +1184,7 @@ class CalculatorView(APIView):
             # 1. Their assignee payout (created above)
             # 2. This bonus payout
             bonus_payout = Payout.objects.create(
+                account=account,
                 employee=quoted_by_user,
                 payout_type=bonus_type,
                 amount=bonus_amount,
@@ -1216,6 +1303,7 @@ class CalculatorView(APIView):
             
             # Create TimeEntry record first
             time_entry = TimeEntry.objects.create(
+                account=account,
                 employee=employee,
                 check_in_time=start_datetime,
                 check_out_time=end_datetime,
@@ -1229,6 +1317,7 @@ class CalculatorView(APIView):
             
             # Create payout linked to TimeEntry
             payout = Payout.objects.create(
+                account=account,
                 employee=employee,
                 payout_type='hourly',
                 amount=amount,
@@ -1272,7 +1361,9 @@ class ReportsView(APIView):
         end_date = request.query_params.get('end_date', None)
         project_title = request.query_params.get('project_title', None)
         
-        base_users = User.objects.filter(account=account).exclude(is_superuser=True)
+        from accounts.user_access import payouts_queryset_for_account, time_entries_queryset_for_account, users_queryset_for_account
+
+        base_users = users_queryset_for_account(account).exclude(is_superuser=True)
         if can_view_team and employee_id:
             employee_filter = base_users.filter(pk=employee_id)
         elif not can_view_team:
@@ -1280,7 +1371,7 @@ class ReportsView(APIView):
         else:
             employee_filter = base_users
         
-        payouts_query = Payout.objects.filter(employee__in=employee_filter)
+        payouts_query = payouts_queryset_for_account(account).filter(employee__in=employee_filter)
         
         if payout_type:
             payouts_query = payouts_query.filter(payout_type=payout_type)
@@ -1305,7 +1396,7 @@ class ReportsView(APIView):
         payouts = payouts_query.select_related('employee', 'job', 'time_entry')
         
         # Get time entries (for hourly employees)
-        time_entries_query = TimeEntry.objects.filter(
+        time_entries_query = time_entries_queryset_for_account(account).filter(
             employee__in=employee_filter,
             status='checked_out'
         )

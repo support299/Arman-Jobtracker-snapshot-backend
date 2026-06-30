@@ -8,6 +8,7 @@ from django.db import transaction
 from django.core.exceptions import ObjectDoesNotExist
 from accounts.models import (
     GHLAuthCredentials,
+    GHLCompanyAuth,
     Contact,
     Address,
     Calendar,
@@ -1049,32 +1050,31 @@ def delete_contact(data):
         print("Contact not found for deletion:", contact_id)
 
 
+def _local_role_from_ghl_user(user_data: Dict[str, Any]) -> str:
+    """Map GHL user roles to local User.role."""
+    roles = user_data.get("roles") or {}
+    user_type = (roles.get("type") or user_data.get("type") or "").strip().lower()
+    ghl_role = (roles.get("role") or "").strip().lower()
+    if user_type == "agency" and ghl_role == "admin":
+        return User.ROLE_AGENCY
+    if ghl_role == "admin":
+        return User.ROLE_SUPERVISOR
+    return User.ROLE_WORKER
+
+
 def create_or_update_user_from_ghl(user_data: Dict[str, Any], account=None) -> User:
     """
     Create or update a User from GHL user data.
-    If user exists (by ghl_user_id or email), update it. Otherwise, create new.
-    Sets user as worker initially and saves GHL user ID.
-    
-    Args:
-        user_data (dict): User data from GHL API or webhook payload with fields:
-            - id: GHL user ID
-            - name: Full name
-            - firstName: First name
-            - lastName: Last name
-            - email: Email address
-            - phone: Phone number
-            Or nested structure with 'user' key containing the user data
-        account: GHLAuthCredentials instance for multi-account onboarding; saved on the user record
-    
-    Returns:
-        User: The created or updated User instance
+
+    Account-scoped users are matched by ghl_user_id, then email within the same account.
+    Agency users are matched by ghl_user_id or agency role + email; they are not tied to
+    a single subaccount (iframe location_id selects context at request time).
     """
-    # Get location_id from root payload (before unpacking nested 'user') for account resolution
+    from accounts.user_access import extract_ghl_user_metadata, ghl_user_is_agency
+
     root_location_id = user_data.get("locationId")
-    # Handle nested webhook payload structure (if user data is nested)
     if "user" in user_data:
         user_data = user_data["user"]
-    # Resolve account for multi-account: use passed account or look up by locationId from payload
     if account is None and root_location_id:
         account = GHLAuthCredentials.objects.filter(location_id=root_location_id).first()
 
@@ -1084,52 +1084,55 @@ def create_or_update_user_from_ghl(user_data: Dict[str, Any], account=None) -> U
     last_name = user_data.get("lastName", "")
     phone = user_data.get("phone", "")
     full_name = user_data.get("name", "")
-    
-    # Generate username from email or use a default
-    # Use email as username, or generate from GHL user ID
+
+    metadata = extract_ghl_user_metadata(user_data)
+    is_agency = ghl_user_is_agency(user_data)
+    if is_agency and not metadata.get("ghl_company_id") and account is not None:
+        metadata["ghl_company_id"] = getattr(account, "company_id", None)
+
     base_username = email if email else f"user_{ghl_user_id}"
     username = base_username
-    
-    # Try to find existing user by ghl_user_id first, then by email
+
     user = None
     if ghl_user_id:
-        try:
-            user = User.objects.get(ghl_user_id=ghl_user_id)
-        except User.DoesNotExist:
-            pass
-    
-    if not user and email:
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            pass
-    
-    # If creating new user, ensure username is unique
+        user = User.objects.filter(ghl_user_id=ghl_user_id).first()
+
+    if not user and email and is_agency:
+        user = User.objects.filter(email__iexact=email, role=User.ROLE_AGENCY).first()
+
+    if not user and email and account is not None and not is_agency:
+        user = User.objects.filter(email__iexact=email, account=account).first()
+
     if not user:
         counter = 1
         while User.objects.filter(username=username).exists():
             if email:
-                # If email exists, append counter
                 local_part, domain = email.split('@', 1)
                 username = f"{local_part}_{counter}@{domain}"
             else:
                 username = f"user_{ghl_user_id}_{counter}"
             counter += 1
-    
-    # Prepare update/create defaults (include account for multi-account onboarding)
+
+    mapped_role = _local_role_from_ghl_user(user_data)
     defaults = {
         "ghl_user_id": ghl_user_id,
         "email": email,
         "first_name": first_name,
         "last_name": last_name,
-        "role": User.ROLE_WORKER,  # Set as worker initially
+        **metadata,
     }
-    if account is not None:
+
+    if user and user.role == User.ROLE_AGENCY:
+        defaults["role"] = User.ROLE_AGENCY
+    else:
+        defaults["role"] = mapped_role
+
+    if is_agency or (user and user.role == User.ROLE_AGENCY):
+        defaults["account"] = None
+    elif account is not None:
         defaults["account"] = account
 
     if user:
-        # Update existing user
-        # If no username is set, use the generated one
         if not user.username:
             defaults["username"] = username
         for key, value in defaults.items():
@@ -1137,52 +1140,155 @@ def create_or_update_user_from_ghl(user_data: Dict[str, Any], account=None) -> U
         user.save()
         print(f"User updated: {email or ghl_user_id}")
     else:
-        # Create new user - username is passed separately, not in defaults
         user = User.objects.create(
             username=username,
             **defaults
         )
-        # Set password as email address
-        if email:
-            user.set_password("adminuser@246!")
-        else:
-            # If no email, set password as GHL user ID
-            user.set_password("adminuser@246!")
+        user.set_password("adminuser@246!")
         user.save()
         print(f"User created: {email or ghl_user_id}")
-    
+
+    from payroll_app.utils import ensure_employee_profile_for_user
+
+    profile_account = None if (is_agency or user.role == User.ROLE_AGENCY) else account
+    ensure_employee_profile_for_user(user, account=profile_account)
+
     return user
 
 
-def fetch_all_users_from_ghl(location_id: str, access_token: str) -> List[Dict[str, Any]]:
-    """
-    Fetch all users from GoHighLevel API for a given location.
-    
-    Args:
-        location_id (str): The location ID for the subaccount
-        access_token (str): Bearer token for authentication
-        
-    Returns:
-        List[Dict]: List of all users from GHL API
-    """
-    url = "https://services.leadconnectorhq.com/users/"
+def _ghl_user_has_location_access(user: Dict[str, Any], location_id: str) -> bool:
+    """True if this GHL user can access the given sub-account (location)."""
+    roles = user.get("roles") or {}
+    user_type = (roles.get("type") or user.get("type") or "").strip().lower()
+    location_ids = roles.get("locationIds") or user.get("locationIds") or []
+    if isinstance(location_ids, str):
+        location_ids = [location_ids]
+
+    if user_type == "agency":
+        if roles.get("restrictSubAccount"):
+            return location_id in location_ids
+        return True
+
+    if user_type == "account":
+        return location_id in location_ids
+
+    if location_ids:
+        return location_id in location_ids
+    return False
+
+
+def _paginate_ghl_users_search(
+    *,
+    access_token: str,
+    company_id: str,
+    extra_params: Optional[Dict[str, str]] = None,
+    page_size: int = 100,
+) -> List[Dict[str, Any]]:
+    url = f"{BASE_URL}/users/search"
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {access_token}",
-        "Version": "2021-07-28"
+        "Version": API_VERSION,
     }
-    
-    params = {
-        "locationId": location_id
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, params=params)
+    skip = 0
+    collected: List[Dict[str, Any]] = []
+    extra_params = extra_params or {}
+
+    while True:
+        params = {
+            "companyId": company_id,
+            "skip": str(skip),
+            "limit": str(page_size),
+            **extra_params,
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
-        data = response.json()
-        users = data.get("users", [])
-        print(f"Fetched {len(users)} users from GHL")
-        return users
+        batch = response.json().get("users", [])
+        collected.extend(batch)
+        if len(batch) < page_size:
+            break
+        skip += page_size
+    return collected
+
+
+def fetch_all_users_from_ghl(
+    location_id: str,
+    access_token: str,
+    company_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch GHL users who can access a location (sub-account staff + agency users).
+
+    Uses GET /users/search. Agency users are not returned when filtering only by
+    locationId on a location token; we search at company scope (agency token when
+    available) and filter by roles.locationIds / agency access.
+    """
+    resolved_company_id = (company_id or "").strip()
+    if not resolved_company_id:
+        resolved_company_id = (
+            GHLAuthCredentials.objects.filter(location_id=location_id)
+            .values_list("company_id", flat=True)
+            .first()
+            or ""
+        ).strip()
+    if not resolved_company_id:
+        raise Exception(
+            "company_id is required for GHL users/search; "
+            f"none found for location_id={location_id!r}"
+        )
+
+    search_token = (access_token or "").strip()
+    company_auth = GHLCompanyAuth.objects.filter(company_id=resolved_company_id).first()
+    if company_auth and (company_auth.access_token or "").strip():
+        search_token = company_auth.access_token.strip()
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+
+    def _merge(users: List[Dict[str, Any]]) -> None:
+        for row in users:
+            uid = row.get("id")
+            if uid:
+                by_id[uid] = row
+
+    try:
+        company_users = _paginate_ghl_users_search(
+            access_token=search_token,
+            company_id=resolved_company_id,
+        )
+        for row in company_users:
+            if _ghl_user_has_location_access(row, location_id):
+                _merge([row])
+
+        location_users = _paginate_ghl_users_search(
+            access_token=search_token,
+            company_id=resolved_company_id,
+            extra_params={"locationId": location_id},
+        )
+        _merge(location_users)
+
+        agency_users = _paginate_ghl_users_search(
+            access_token=search_token,
+            company_id=resolved_company_id,
+            extra_params={"type": "agency"},
+        )
+        for row in agency_users:
+            if _ghl_user_has_location_access(row, location_id):
+                _merge([row])
+
+        all_users = list(by_id.values())
+        print(
+            "Fetched %s users from GHL (users/search) location_id=%s "
+            "company_scope=%s location_filter=%s agency_type=%s used_agency_token=%s"
+            % (
+                len(all_users),
+                location_id,
+                len(company_users),
+                len(location_users),
+                len(agency_users),
+                bool(company_auth and company_auth.access_token),
+            )
+        )
+        return all_users
     except requests.exceptions.RequestException as e:
         print(f"Error fetching users from GHL: {e}")
         raise Exception(f"Failed to fetch users: {e}")
@@ -1214,7 +1320,11 @@ def try_link_user_ghl_id_from_email(user: User, account: Optional[GHLAuthCredent
         return False
 
     try:
-        users_data = fetch_all_users_from_ghl(location_id, access_token)
+        users_data = fetch_all_users_from_ghl(
+            location_id,
+            access_token,
+            company_id=getattr(account, "company_id", None),
+        )
     except Exception as e:
         print(f"⚠️ [GHL USER LINK] Could not fetch GHL users for email match: {e}")
         return False
@@ -1258,7 +1368,13 @@ def sync_all_users_to_db(location_id: str, access_token: str) -> Dict[str, int]:
     if not account:
         print(f"⚠️ [USER SYNC] No GHLAuthCredentials found for location_id: {location_id}; users will have no account set.")
 
-    users_data = fetch_all_users_from_ghl(location_id, access_token)
+    users_data = fetch_all_users_from_ghl(
+        location_id,
+        access_token,
+        company_id=getattr(account, "company_id", None) if account else None,
+    )
+
+    print(f"users_data: {users_data}")
     
     created_count = 0
     updated_count = 0
@@ -1275,6 +1391,8 @@ def sync_all_users_to_db(location_id: str, access_token: str) -> Dict[str, int]:
             user_exists = User.objects.filter(email=email).exists()
         
         user = create_or_update_user_from_ghl(user_data, account=account)
+
+        
         
         if user_exists:
             updated_count += 1

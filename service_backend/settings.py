@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
+from corsheaders.defaults import default_headers
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -199,12 +200,9 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 
 CORS_ALLOW_CREDENTIALS = True
 
-
-CORS_ALLOWED_HEADERS = [
-    'authorization',
-    'content-type',
-    'x-csrftoken',
-    'x-requested-with',
+# Note: setting name is CORS_ALLOW_HEADERS (not CORS_ALLOWED_HEADERS).
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-location-id',
 ]
 
 GOOGLE_PLACES_API_KEY = config('GOOGLE_PLACES_API_KEY', '')

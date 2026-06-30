@@ -3,6 +3,30 @@ from django.utils import timezone as django_timezone
 from service_app.models import User
 
 
+def ensure_employee_profile_for_user(user, account=None):
+    """Create or backfill EmployeeProfile after GHL sync or user creation."""
+    from payroll_app.models import EmployeeProfile
+
+    defaults = {
+        "department": "General",
+        "position": "Employee",
+        "pay_scale_type": "project",
+        "status": "active",
+    }
+    if account is not None and not getattr(user, "is_agency_user", False):
+        defaults["account"] = account
+
+    profile, created = EmployeeProfile.objects.get_or_create(
+        user=user,
+        defaults=defaults,
+    )
+    if not created and account is not None and profile.account_id is None:
+        if not getattr(user, "is_agency_user", False):
+            profile.account = account
+            profile.save(update_fields=["account"])
+    return profile
+
+
 def is_first_time_bonus_eligible(job):
     """
     Whether the quoted-by person should receive the first-time bonus rate.

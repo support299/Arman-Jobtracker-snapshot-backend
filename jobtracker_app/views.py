@@ -1843,6 +1843,7 @@ def tip_webhook_handler(request):
     for i, assignment in enumerate(assignees):
         amount = share + (remainder if i == 0 else Decimal("0"))
         payout = Payout.objects.create(
+            account=job.account,
             employee=assignment.user,
             payout_type="tip",
             amount=amount,

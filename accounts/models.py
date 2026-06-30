@@ -32,6 +32,15 @@ class GHLAuthCredentials(models.Model):
     
     is_active = models.BooleanField(default=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["location_id"],
+                condition=models.Q(location_id__isnull=False) & ~models.Q(location_id=""),
+                name="unique_ghlauthcredentials_location_id",
+            ),
+        ]
+
     def __str__(self):
         return f"{self.user_id} - {self.company_id}"
 

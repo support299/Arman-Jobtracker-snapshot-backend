@@ -7,14 +7,20 @@ import uuid
 
 
 class User(AbstractUser):
-    """Extended User model for admin authentication. Belongs to one GHL account (GHLAuthCredentials)."""
+    """Extended User model for admin authentication.
+
+    Account-scoped users belong to one GHL subaccount. Agency users (ROLE_AGENCY) can
+    access any onboarded subaccount allowed by their GHL location scope (iframe location_id).
+    """
     ROLE_MANAGER = 'manager'
     ROLE_SUPERVISOR = 'supervisor'
+    ROLE_AGENCY = 'agency'
     ROLE_WORKER = 'worker'
 
     ROLE_CHOICES = [
         (ROLE_MANAGER, 'Manager'),
         (ROLE_SUPERVISOR, 'Supervisor'),
+        (ROLE_AGENCY, 'Agency'),
         (ROLE_WORKER, 'Worker'),
     ]
     # id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -28,6 +34,27 @@ class User(AbstractUser):
         help_text='GHL account this user belongs to (for multi-app onboarding)',
     )
     ghl_user_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    ghl_user_type = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        help_text='GHL user type from sync: agency or account.',
+    )
+    ghl_company_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text='GHL company id for agency users (limits cross-company access).',
+    )
+    ghl_location_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='GHL roles.locationIds when restrictSubAccount is enabled for agency users.',
+    )
+    ghl_restrict_sub_account = models.BooleanField(
+        default=False,
+        help_text='When True, agency user access is limited to ghl_location_ids.',
+    )
     is_admin = models.BooleanField(default=False)
     payroll_can_view_team_data = models.BooleanField(
         default=True,
@@ -57,9 +84,16 @@ class User(AbstractUser):
         pass
 
     def save(self, *args, **kwargs):
-        # Auto-sync is_admin from role: Managers and Supervisors are admins; others are regular users
-        self.is_admin = self.role in [self.ROLE_MANAGER, self.ROLE_SUPERVISOR]
+        self.is_admin = self.role in [
+            self.ROLE_MANAGER,
+            self.ROLE_SUPERVISOR,
+            self.ROLE_AGENCY,
+        ]
         super().save(*args, **kwargs)
+
+    @property
+    def is_agency_user(self):
+        return self.role == self.ROLE_AGENCY or (self.ghl_user_type or '').lower() == 'agency'
 
 
 class Location(models.Model):

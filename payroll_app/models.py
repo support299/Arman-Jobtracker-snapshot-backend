@@ -207,6 +207,14 @@ class TimeEntry(models.Model):
     ]
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        'accounts.GHLAuthCredentials',
+        on_delete=models.CASCADE,
+        related_name='time_entries',
+        null=True,
+        blank=True,
+        help_text='GHL subaccount where this clock entry was created.',
+    )
     employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='time_entries')
     
     check_in_time = models.DateTimeField()
@@ -230,6 +238,11 @@ class TimeEntry(models.Model):
     
     def __str__(self):
         return f"{self.employee.username} - {self.check_in_time.strftime('%Y-%m-%d %H:%M')}"
+    
+    def save(self, *args, **kwargs):
+        if self.account_id is None and self.employee_id:
+            self.account_id = getattr(self.employee, 'account_id', None)
+        super().save(*args, **kwargs)
     
     def calculate_hours(self):
         """Calculate total hours worked"""
@@ -256,6 +269,14 @@ class Payout(models.Model):
     ]
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        'accounts.GHLAuthCredentials',
+        on_delete=models.CASCADE,
+        related_name='payouts',
+        null=True,
+        blank=True,
+        help_text='GHL subaccount this payout belongs to.',
+    )
     employee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payouts')
     payout_type = models.CharField(max_length=20, choices=PAYOUT_TYPE_CHOICES)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
@@ -309,6 +330,40 @@ class Payout(models.Model):
     
     def __str__(self):
         return f"{self.employee.username} - {self.payout_type} - ${self.amount}"
+
+    def save(self, *args, **kwargs):
+        if self.account_id is None:
+            if self.time_entry_id:
+                te_account_id = (
+                    self.time_entry.account_id
+                    if getattr(self, 'time_entry', None) is not None
+                    else None
+                )
+                if te_account_id is None:
+                    from payroll_app.models import TimeEntry
+                    te_account_id = (
+                        TimeEntry.objects.filter(pk=self.time_entry_id)
+                        .values_list('account_id', flat=True)
+                        .first()
+                    )
+                self.account_id = te_account_id
+            elif self.job_id:
+                job_account_id = (
+                    self.job.account_id
+                    if getattr(self, 'job', None) is not None
+                    else None
+                )
+                if job_account_id is None:
+                    from jobtracker_app.models import Job
+                    job_account_id = (
+                        Job.objects.filter(pk=self.job_id)
+                        .values_list('account_id', flat=True)
+                        .first()
+                    )
+                self.account_id = job_account_id
+            elif self.employee_id:
+                self.account_id = getattr(self.employee, 'account_id', None)
+        super().save(*args, **kwargs)
 
 
 class PayrollSettings(models.Model):

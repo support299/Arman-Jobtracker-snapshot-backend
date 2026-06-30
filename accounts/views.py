@@ -9,6 +9,7 @@ from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from accounts.ghl_credentials import upsert_ghl_credentials
 from accounts.models import GHLAuthCredentials, GHLCompanyAuth, Location, Webhook
 from accounts.oauth import build_ghl_marketplace_auth_url
 from accounts.tasks import fetch_all_contacts_task, handle_webhook_event
@@ -50,27 +51,7 @@ SCOPE = config("SCOPE")
 
 
 def _upsert_ghl_credentials(token_data):
-    location_id = (token_data.get("locationId") or "").strip()
-    if not location_id:
-        raise ValueError("OAuth token payload missing locationId")
-
-    user_id = (token_data.get("userId") or "").strip()
-    if not user_id:
-        raise ValueError(f"OAuth token payload missing userId for location_id={location_id}")
-
-    obj, created = GHLAuthCredentials.objects.update_or_create(
-        location_id=location_id,
-        defaults={
-            "access_token": token_data.get("access_token") or "",
-            "refresh_token": token_data.get("refresh_token") or "",
-            "expires_in": token_data.get("expires_in") or 0,
-            "scope": token_data.get("scope") or "",
-            "user_type": token_data.get("userType") or "",
-            "company_id": token_data.get("companyId") or "",
-            "user_id": user_id,
-        },
-    )
-    return obj, created
+    return upsert_ghl_credentials(token_data)
 
 
 def _sync_location_snapshot(credentials):
@@ -237,7 +218,7 @@ def _handle_install_webhook(data):
     if not location_id or not company_id:
         return {"received": True, "skipped": "missing_ids"}
 
-    if GHLAuthCredentials.objects.filter(location_id=location_id).exists():
+    if GHLAuthCredentials.objects.filter(location_id=location_id, is_active=True).exists():
         logger.info("GHL INSTALL: location %s already connected, skipping", location_id)
         return {"received": True, "skipped": "already_exists", "location_id": location_id}
 

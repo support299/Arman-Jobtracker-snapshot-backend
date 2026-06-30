@@ -12,7 +12,7 @@ def payroll_has_admin_access(user):
         return False
     if getattr(user, "is_superuser", False):
         return True
-    return getattr(user, "role", None) == User.ROLE_SUPERVISOR
+    return getattr(user, "role", None) in (User.ROLE_SUPERVISOR, User.ROLE_AGENCY)
 
 
 def payroll_can_view_team_data(user):
@@ -47,4 +47,4 @@ def payroll_can_manage_time_off(user):
     if getattr(user, "is_superuser", False):
         return True
     role = getattr(user, "role", None)
-    return role in (User.ROLE_MANAGER, User.ROLE_SUPERVISOR)
+    return role in (User.ROLE_MANAGER, User.ROLE_SUPERVISOR, User.ROLE_AGENCY)

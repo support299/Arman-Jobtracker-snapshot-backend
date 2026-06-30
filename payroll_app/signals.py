@@ -128,6 +128,7 @@ def _create_project_payouts(job):
         
         # Create project payout for this assignee
         Payout.objects.create(
+            account=job.account,
             employee=employee,
             payout_type='project',
             amount=amount,
@@ -172,6 +173,7 @@ def _create_project_payouts(job):
             # 1. Their assignee payout (created above)
             # 2. This bonus payout
             Payout.objects.create(
+                account=job.account,
                 employee=quoted_by_employee,
                 payout_type=bonus_type,
                 amount=bonus_amount,
@@ -186,13 +188,7 @@ def _create_project_payouts(job):
 def create_employee_profile(sender, instance, created, **kwargs):
     """Automatically create EmployeeProfile when a User is created"""
     if created:
-        # Check if profile already exists (prevent duplicates)
-        if not hasattr(instance, 'employee_profile'):
-            EmployeeProfile.objects.create(
-                user=instance,
-                department='General',
-                position='Employee',
-                pay_scale_type='project',  # Default to project-based, can be changed later
-                status='active'
-            )
+        from payroll_app.utils import ensure_employee_profile_for_user
+
+        ensure_employee_profile_for_user(instance, account=getattr(instance, "account", None))
 

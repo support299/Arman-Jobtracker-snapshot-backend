@@ -20,7 +20,7 @@ class AccountScopedPermission(permissions.BasePermission):
     Add to permission_classes for any view that must be scoped to a single account.
     """
 
-    message = "Account context is required. Provide location_id (query/body/header) or authenticate with an account."
+    message = "Account context is required. Provide location_id (query/body/X-Location-Id header) or authenticate with an account-linked user."
 
     def has_permission(self, request, view):
         account = get_account_from_request(request, allow_superadmin_override=True)
