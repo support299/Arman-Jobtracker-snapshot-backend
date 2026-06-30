@@ -374,15 +374,22 @@ def _update_ghl_custom_fields_on_job_change(sender, instance, created, **kwargs)
         })
         print(f"   📊 Adding Job Status: {status_display}")
 
-    # Add "Job Completed Date" (6XTylwoqW6k15Dznugee) only when status is completed and job is one-time
+    # Job Completed Date: only when status is completed and job is one-time
     if status_changed and instance.status == 'completed' and instance.job_type == 'one_time':
-        JOB_COMPLETED_DATE_FIELD_ID = '6XTylwoqW6k15Dznugee'
-        today_str = timezone.now().strftime('%Y-%m-%d')  # ISO date for GHL date field
-        custom_fields.append({
-            "id": JOB_COMPLETED_DATE_FIELD_ID,
-            "field_value": today_str
-        })
-        print(f"   📅 Adding Job Completed Date (one-time job): {today_str}")
+        try:
+            job_completed_date_field = GHLCustomField.objects.get(
+                account=credentials,
+                field_name='Job Completed Date',
+                is_active=True
+            )
+            today_str = timezone.now().strftime('%Y-%m-%d')  # ISO date for GHL date field
+            custom_fields.append({
+                "id": job_completed_date_field.ghl_field_id,
+                "field_value": today_str
+            })
+            print(f"   📅 Adding Job Completed Date (one-time job): {today_str}")
+        except GHLCustomField.DoesNotExist:
+            print("⚠️ [GHL CUSTOM FIELDS] 'Job Completed Date' custom field not found")
 
     # Add Technician Name only when status is on_the_way (first assignee only)
     if 'technician_name' in custom_fields_mapping and instance.status == 'on_the_way':

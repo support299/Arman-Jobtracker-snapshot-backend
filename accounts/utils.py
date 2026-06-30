@@ -720,8 +720,8 @@ def fetch_contacts_locations(contact_data: list, location_id: str, access_token:
 
 def sync_custom_fields_to_db(location_id: str, access_token: str) -> dict:
     """
-    Fetch custom fields from GHL API and save them to GHLCustomField model.
-    This allows us to look up custom field IDs by name and location_id instead of hardcoding them.
+    Ensure app-required custom fields exist in GHL, fetch all contact custom fields,
+    and save mappings to GHLCustomField model.
     
     Args:
         location_id (str): The location ID for the subaccount
@@ -731,18 +731,27 @@ def sync_custom_fields_to_db(location_id: str, access_token: str) -> dict:
         dict: Summary with counts of created and updated custom fields
     """
     try:
+        from accounts.ghl_custom_fields import ensure_app_custom_fields
+
         # Get the account (GHLAuthCredentials) for this location
         account = GHLAuthCredentials.objects.filter(location_id=location_id).first()
         if not account:
             print(f"❌ [CUSTOM FIELDS SYNC] No GHLAuthCredentials found for location_id: {location_id}")
             return {"created": 0, "updated": 0, "total": 0}
+
+        ensure_summary = ensure_app_custom_fields(location_id, access_token)
         
-        # Fetch custom fields from API
+        # Fetch custom fields from API (includes any fields just created above)
         custom_fields_data = fetch_location_custom_fields(location_id, access_token)
         
         if not custom_fields_data:
             print(f"⚠️ [CUSTOM FIELDS SYNC] No custom fields found for location_id: {location_id}")
-            return {"created": 0, "updated": 0, "total": 0}
+            return {
+                "created": 0,
+                "updated": 0,
+                "total": 0,
+                "ensure": ensure_summary,
+            }
         
         created_count = 0
         updated_count = 0
@@ -783,7 +792,8 @@ def sync_custom_fields_to_db(location_id: str, access_token: str) -> dict:
         return {
             "created": created_count,
             "updated": updated_count,
-            "total": len(custom_fields_data)
+            "total": len(custom_fields_data),
+            "ensure": ensure_summary,
         }
         
     except Exception as e:
